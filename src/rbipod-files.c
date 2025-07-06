@@ -362,40 +362,93 @@ gboolean extract_artwork_ffmpeg(const char *file_path, AudioMetadata *meta) {
     
     // Create temporary file for artwork extraction
     char temp_artwork[256];
-    snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/artwork_%d.jpg", getpid());
+    snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/artwork_%d", getpid());
     
-    // Use ffmpeg to extract artwork
+    // Try multiple extraction methods to get artwork
     char command[2048];
+    gboolean success = FALSE;
+    
+    // Method 1: Extract first video stream (cover art) to JPEG (better iPod compatibility)
     snprintf(command, sizeof(command), 
-             "ffmpeg -i \"%s\" -an -vcodec copy \"%s\" -y 2>/dev/null", 
+             "ffmpeg -i \"%s\" -map 0:v:0 -c:v mjpeg -q:v 2 \"%s.jpg\" -y 2>/dev/null", 
              file_path, temp_artwork);
     
-    int result = system(command);
-    if (result == 0) {
-        // Read the extracted artwork file
-        FILE *artwork_file = fopen(temp_artwork, "rb");
+    if (system(command) == 0) {
+        char jpg_file[512];
+        snprintf(jpg_file, sizeof(jpg_file), "%s.jpg", temp_artwork);
+        
+        FILE *artwork_file = fopen(jpg_file, "rb");
         if (artwork_file) {
-            // Get file size
             fseek(artwork_file, 0, SEEK_END);
             long size = ftell(artwork_file);
             fseek(artwork_file, 0, SEEK_SET);
             
-            if (size > 0 && size < 5000000) { // Limit to 5MB
+            if (size > 100 && size < 5000000) { // Reasonable size check
                 meta->artwork_data = g_malloc(size);
                 meta->artwork_size = fread(meta->artwork_data, 1, size, artwork_file);
                 meta->artwork_format = g_strdup("jpeg");
-                
-                log_message(LOG_DEBUG, "Extracted artwork: %zu bytes", meta->artwork_size);
-                fclose(artwork_file);
-                unlink(temp_artwork); // Clean up temp file
-                return TRUE;
+                success = TRUE;
+                log_message(LOG_DEBUG, "Extracted artwork (JPEG): %zu bytes", meta->artwork_size);
             }
             fclose(artwork_file);
         }
-        unlink(temp_artwork); // Clean up temp file
+        unlink(jpg_file);
     }
     
-    return FALSE;
+    // Method 2: If JPEG failed, try PNG
+    if (!success) {
+        snprintf(command, sizeof(command), 
+                 "ffmpeg -i \"%s\" -map 0:v:0 -c:v png \"%s.png\" -y 2>/dev/null", 
+                 file_path, temp_artwork);
+        
+        if (system(command) == 0) {
+            char png_file[512];
+            snprintf(png_file, sizeof(png_file), "%s.png", temp_artwork);
+            
+            FILE *artwork_file = fopen(png_file, "rb");
+            if (artwork_file) {
+                fseek(artwork_file, 0, SEEK_END);
+                long size = ftell(artwork_file);
+                fseek(artwork_file, 0, SEEK_SET);
+                
+                if (size > 100 && size < 5000000) { // Reasonable size check
+                    meta->artwork_data = g_malloc(size);
+                    meta->artwork_size = fread(meta->artwork_data, 1, size, artwork_file);
+                    meta->artwork_format = g_strdup("png");
+                    success = TRUE;
+                    log_message(LOG_DEBUG, "Extracted artwork (PNG): %zu bytes", meta->artwork_size);
+                }
+                fclose(artwork_file);
+            }
+            unlink(png_file);
+        }
+    }
+    
+    // Method 3: Use ffprobe to check if artwork actually exists
+    if (!success) {
+        snprintf(command, sizeof(command), 
+                 "ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \"%s\" 2>/dev/null", 
+                 file_path);
+        
+        FILE *probe = popen(command, "r");
+        if (probe) {
+            char codec[64] = {0};
+            if (fgets(codec, sizeof(codec), probe)) {
+                // Remove newline
+                char *newline = strchr(codec, '\n');
+                if (newline) *newline = '\0';
+                
+                if (strlen(codec) > 0) {
+                    log_message(LOG_DEBUG, "File has video stream (codec: %s) but extraction failed: %s", codec, file_path);
+                } else {
+                    log_message(LOG_DEBUG, "No artwork found in file: %s", file_path);
+                }
+            }
+            pclose(probe);
+        }
+    }
+    
+    return success;
 }
 
 gboolean extract_podcast_specific_metadata(const char *file_path, AudioMetadata *meta) {
@@ -695,8 +748,44 @@ gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta)
 gboolean probe_audio_file(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;
     
-    // Use the comprehensive metadata extraction
-    gboolean success = extract_audio_metadata_full(file_path, meta);
+    // First, try comprehensive metadata extraction from the audio file
+    gboolean metadata_success = extract_audio_metadata_full(file_path, meta);
+    
+    if (!metadata_success) {
+        // If ffprobe fails, extract metadata from filename as fallback
+        log_message(LOG_DEBUG, "ffprobe failed, extracting from filename: %s", file_path);
+        
+        // Save current basic info
+        guint32 current_mediatype = meta->mediatype;
+        gsize current_file_size = meta->file_size;
+        time_t current_time_added = meta->time_added;
+        
+        // Clear current metadata
+        free_metadata(meta);
+        
+        // Re-extract from filename
+        AudioMetadata *filename_meta = extract_metadata_from_filename(file_path);
+        if (filename_meta) {
+            *meta = *filename_meta;
+            g_free(filename_meta); // Free the container, not the content
+            
+            // Restore important fields
+            meta->mediatype = current_mediatype;
+            meta->file_size = current_file_size;
+            meta->time_added = current_time_added;
+        }
+    }
+    
+    // Always try to get duration/bitrate if not already set
+    if (meta->duration == 0) {
+        int duration = 0, bitrate = 0;
+        if (extract_audio_duration(file_path, &duration, &bitrate)) {
+            meta->duration = duration;
+            meta->bitrate = bitrate;
+            log_message(LOG_DEBUG, "Extracted duration/bitrate: %s -> %d sec, %d kbps", 
+                       file_path, duration, bitrate);
+        }
+    }
     
     // If this is a podcast, extract podcast-specific metadata
     if (meta->mediatype == ITDB_MEDIATYPE_PODCAST) {
@@ -705,23 +794,12 @@ gboolean probe_audio_file(const char *file_path, AudioMetadata *meta) {
                    file_path, meta->track_number, meta->time_released);
     }
     
-    if (success) {
-        log_message(LOG_DEBUG, "Full metadata extraction successful for: %s", file_path);
-        return TRUE;
-    }
+    log_message(LOG_DEBUG, "Final metadata: Title='%s', Artist='%s', Album='%s'", 
+               meta->title ? meta->title : "N/A",
+               meta->artist ? meta->artist : "N/A", 
+               meta->album ? meta->album : "N/A");
     
-    // Fallback to duration-only extraction
-    int duration = 0, bitrate = 0;
-    if (extract_audio_duration(file_path, &duration, &bitrate)) {
-        meta->duration = duration;
-        meta->bitrate = bitrate;
-        
-        log_message(LOG_DEBUG, "Fallback duration extraction: %s -> %d sec, %d kbps", 
-                   file_path, duration, bitrate);
-        return TRUE;
-    }
-    
-    return FALSE;
+    return TRUE;
 }
 
 Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const char *ipod_path, const char *media_type) {
@@ -795,21 +873,46 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     if (meta->artwork_data && meta->artwork_size > 0) {
         // Create temporary file for libgpod artwork functions
         char temp_artwork[256];
-        snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.jpg", getpid());
+        const char *ext = (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpg";
+        snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.%s", getpid(), ext);
         
         FILE *temp_file = fopen(temp_artwork, "wb");
         if (temp_file) {
-            fwrite(meta->artwork_data, 1, meta->artwork_size, temp_file);
+            size_t written = fwrite(meta->artwork_data, 1, meta->artwork_size, temp_file);
             fclose(temp_file);
             
-            // Use libgpod to set artwork (proper method that won't interfere with metadata)
-            gboolean artwork_added = itdb_track_set_thumbnails(track, temp_artwork);
-            
-            if (artwork_added) {
-                log_message(LOG_DEBUG, "Successfully added artwork to track: %s (%zu bytes)", 
-                           track->title, meta->artwork_size);
+            if (written == meta->artwork_size) {
+                // Use libgpod to set artwork (proper method that won't interfere with metadata)
+                GError *error = NULL;
+                gboolean artwork_added = itdb_track_set_thumbnails(track, temp_artwork);
+                
+                if (artwork_added) {
+                    log_message(LOG_DEBUG, "Successfully added artwork to track: %s (%zu bytes, format: %s)", 
+                               track->title, meta->artwork_size, ext);
+                } else {
+                    log_message(LOG_WARNING, "Failed to add artwork to track: %s (libgpod error)", track->title);
+                    
+                    // Try alternative: extract artwork again using ffmpeg directly
+                    char ffmpeg_cmd[1024];
+                    snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd), 
+                             "ffmpeg -i \"%s\" -an -vcodec copy \"%s_direct.jpg\" -y 2>/dev/null", 
+                             track->ipod_path, temp_artwork);
+                    
+                    if (system(ffmpeg_cmd) == 0) {
+                        char direct_artwork[512];
+                        snprintf(direct_artwork, sizeof(direct_artwork), "%s_direct.jpg", temp_artwork);
+                        
+                        if (itdb_track_set_thumbnails(track, direct_artwork)) {
+                            log_message(LOG_DEBUG, "Successfully added artwork using direct extraction: %s", track->title);
+                        } else {
+                            log_message(LOG_WARNING, "Direct artwork extraction also failed for: %s", track->title);
+                        }
+                        unlink(direct_artwork);
+                    }
+                }
             } else {
-                log_message(LOG_WARNING, "Failed to add artwork to track: %s", track->title);
+                log_message(LOG_WARNING, "Failed to write complete artwork file for track: %s (%zu/%zu bytes)", 
+                           track->title, written, meta->artwork_size);
             }
             
             // Clean up temporary file
@@ -874,16 +977,32 @@ gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path) {
     
     log_message(LOG_INFO, "Adding file to iPod: %s", file_path);
     
-    // Extract metadata from filename
-    AudioMetadata *meta = extract_metadata_from_filename(file_path);
+    // Initialize metadata structure
+    AudioMetadata *meta = g_malloc0(sizeof(AudioMetadata));
     if (!meta) {
-        log_message(LOG_ERROR, "Failed to extract metadata from %s", file_path);
+        log_message(LOG_ERROR, "Failed to allocate metadata structure");
         return FALSE;
     }
     
-    // Probe audio file for duration and bitrate
+    // Set media type if forced
+    if (g_sync_ctx.use_force_mediatype) {
+        meta->mediatype = g_sync_ctx.force_mediatype;
+    } else {
+        meta->mediatype = ITDB_MEDIATYPE_AUDIO; // Default
+    }
+    
+    // Set basic file info
+    struct stat file_stat;
+    if (stat(file_path, &file_stat) == 0) {
+        meta->file_size = file_stat.st_size;
+    }
+    meta->time_added = time(NULL);
+    
+    // Probe audio file for all metadata (will fallback to filename if needed)
     if (!probe_audio_file(file_path, meta)) {
-        log_message(LOG_WARNING, "Could not extract audio duration from %s, using defaults", file_path);
+        log_message(LOG_ERROR, "Failed to extract any metadata from %s", file_path);
+        free_metadata(meta);
+        return FALSE;
     }
     
     // Ensure iPod directory structure exists
