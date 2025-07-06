@@ -357,85 +357,329 @@ gboolean extract_metadata_field(const char *file_path, const char *field_name, c
     return success;
 }
 
+gboolean extract_artwork_ffmpeg(const char *file_path, AudioMetadata *meta) {
+    if (!file_path || !meta) return FALSE;
+    
+    // Create temporary file for artwork extraction
+    char temp_artwork[256];
+    snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/artwork_%d.jpg", getpid());
+    
+    // Use ffmpeg to extract artwork
+    char command[2048];
+    snprintf(command, sizeof(command), 
+             "ffmpeg -i \"%s\" -an -vcodec copy \"%s\" -y 2>/dev/null", 
+             file_path, temp_artwork);
+    
+    int result = system(command);
+    if (result == 0) {
+        // Read the extracted artwork file
+        FILE *artwork_file = fopen(temp_artwork, "rb");
+        if (artwork_file) {
+            // Get file size
+            fseek(artwork_file, 0, SEEK_END);
+            long size = ftell(artwork_file);
+            fseek(artwork_file, 0, SEEK_SET);
+            
+            if (size > 0 && size < 5000000) { // Limit to 5MB
+                meta->artwork_data = g_malloc(size);
+                meta->artwork_size = fread(meta->artwork_data, 1, size, artwork_file);
+                meta->artwork_format = g_strdup("jpeg");
+                
+                log_message(LOG_DEBUG, "Extracted artwork: %zu bytes", meta->artwork_size);
+                fclose(artwork_file);
+                unlink(temp_artwork); // Clean up temp file
+                return TRUE;
+            }
+            fclose(artwork_file);
+        }
+        unlink(temp_artwork); // Clean up temp file
+    }
+    
+    return FALSE;
+}
+
+gboolean extract_podcast_specific_metadata(const char *file_path, AudioMetadata *meta) {
+    if (!file_path || !meta) return FALSE;
+    
+    // Extract publication date from filename if it contains date pattern
+    const char *filename = strrchr(file_path, '/');
+    if (filename) filename++; else filename = file_path;
+    
+    // Look for date patterns like YYYY-MM-DD or DD.MM.YYYY
+    int year = 0, month = 0, day = 0;
+    char *date_start = strstr(filename, "2025");
+    if (!date_start) date_start = strstr(filename, "2024");
+    if (!date_start) date_start = strstr(filename, "2023");
+    
+    if (date_start) {
+        // Try YYYY-MM-DD format
+        if (sscanf(date_start, "%d-%d-%d", &year, &month, &day) == 3 ||
+            sscanf(date_start, "%d.%d.%d", &day, &month, &year) == 3) {
+            
+            struct tm tm = {0};
+            tm.tm_year = year - 1900;
+            tm.tm_mon = month - 1;
+            tm.tm_mday = day;
+            meta->time_released = mktime(&tm);
+            
+            log_message(LOG_DEBUG, "Extracted podcast date: %04d-%02d-%02d", year, month, day);
+        }
+    }
+    
+    // Extract episode/season from filename patterns
+    char *episode_pattern = strstr(filename, "Episode");
+    if (!episode_pattern) episode_pattern = strstr(filename, "EP");
+    if (!episode_pattern) episode_pattern = strstr(filename, "E");
+    
+    if (episode_pattern) {
+        int episode_num = 0;
+        if (sscanf(episode_pattern, "Episode %d", &episode_num) == 1 ||
+            sscanf(episode_pattern, "EP%d", &episode_num) == 1 ||
+            sscanf(episode_pattern, "E%d", &episode_num) == 1) {
+            meta->track_number = episode_num;
+            log_message(LOG_DEBUG, "Extracted episode number: %d", episode_num);
+        }
+    }
+    
+    // Set podcast-specific defaults
+    meta->mark_unplayed = TRUE;  // New episodes should be marked as unplayed
+    if (!meta->category) {
+        meta->category = g_strdup("Podcast");
+    }
+    
+    return TRUE;
+}
+
 gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;
     
     gboolean any_success = FALSE;
     
-    // Extract individual fields using mediainfo
-    char *temp_str = NULL;
-    
-    // Extract title (Track name)
-    if (extract_metadata_field(file_path, "Track name", &temp_str)) {
-        g_free(meta->title);
-        meta->title = temp_str;
-        temp_str = NULL;
-        any_success = TRUE;
-    }
-    
-    // Extract artist (Performer)  
-    if (extract_metadata_field(file_path, "Performer", &temp_str)) {
-        g_free(meta->artist);
-        meta->artist = temp_str;
-        temp_str = NULL;
-        any_success = TRUE;
-    }
-    
-    // Extract album
-    if (extract_metadata_field(file_path, "Album", &temp_str)) {
-        g_free(meta->album);
-        meta->album = temp_str;
-        temp_str = NULL;
-        any_success = TRUE;
-    }
-    
-    // Extract genre
-    if (extract_metadata_field(file_path, "Genre", &temp_str)) {
-        g_free(meta->genre);
-        meta->genre = temp_str;
-        temp_str = NULL;
-        any_success = TRUE;
-    }
-    
-    // Extract description (USLT - unsynchronized lyrics/description)
-    if (extract_metadata_field(file_path, "USLT", &temp_str)) {
-        g_free(meta->description);
-        meta->description = temp_str;
-        temp_str = NULL;
-        any_success = TRUE;
-    }
-    
-    // Extract duration and bitrate using separate command
-    char command[1024];
-    snprintf(command, sizeof(command), "mediainfo --Inform=\"General;%%Duration%%,%%OverallBitRate%%\" \"%s\" 2>/dev/null", file_path);
+    // Extract comprehensive metadata using ffprobe (more reliable than mediainfo)
+    char command[2048];
+    snprintf(command, sizeof(command), 
+             "ffprobe -v quiet -show_format -show_streams -of json \"%s\" 2>/dev/null", 
+             file_path);
     
     FILE *pipe = popen(command, "r");
     if (pipe) {
-        char output[256];
-        if (fgets(output, sizeof(output), pipe)) {
-            // Parse duration,bitrate format
-            char *token = strtok(output, ",");
-            if (token) {
-                long duration_ms = strtol(token, NULL, 10);
-                meta->duration = duration_ms / 1000;  // Convert ms to seconds
-                
-                token = strtok(NULL, ",");
-                if (token) {
-                    meta->bitrate = strtol(token, NULL, 10) / 1000;  // Convert bps to kbps
+        char output[8192];
+        size_t bytes_read = fread(output, 1, sizeof(output) - 1, pipe);
+        output[bytes_read] = '\0';
+        pclose(pipe);
+        
+        // Parse JSON output manually (simple parsing for key fields)
+        char *ptr = output;
+        
+        // Extract title
+        char *title_pos = strstr(ptr, "\"title\":");
+        if (title_pos) {
+            char *start = strchr(title_pos + 8, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    g_free(meta->title);
+                    meta->title = g_strndup(start, len);
+                    any_success = TRUE;
                 }
-                any_success = TRUE;
             }
         }
-        pclose(pipe);
+        
+        // Extract artist
+        char *artist_pos = strstr(ptr, "\"artist\":");
+        if (artist_pos) {
+            char *start = strchr(artist_pos + 9, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    g_free(meta->artist);
+                    meta->artist = g_strndup(start, len);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract album
+        char *album_pos = strstr(ptr, "\"album\":");
+        if (album_pos) {
+            char *start = strchr(album_pos + 8, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    g_free(meta->album);
+                    meta->album = g_strndup(start, len);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract genre
+        char *genre_pos = strstr(ptr, "\"genre\":");
+        if (genre_pos) {
+            char *start = strchr(genre_pos + 8, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    g_free(meta->genre);
+                    meta->genre = g_strndup(start, len);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract composer
+        char *composer_pos = strstr(ptr, "\"composer\":");
+        if (composer_pos) {
+            char *start = strchr(composer_pos + 11, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    g_free(meta->composer);
+                    meta->composer = g_strndup(start, len);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract year from date
+        char *date_pos = strstr(ptr, "\"date\":");
+        if (date_pos) {
+            char *start = strchr(date_pos + 7, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    char date_str[16];
+                    int len = MIN(end - start, 15);
+                    strncpy(date_str, start, len);
+                    date_str[len] = '\0';
+                    meta->year = atoi(date_str);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract track number
+        char *track_pos = strstr(ptr, "\"track\":");
+        if (track_pos) {
+            char *start = strchr(track_pos + 8, '"');
+            if (start) {
+                start++;
+                char *slash = strchr(start, '/');
+                char *end = strchr(start, '"');
+                if (end) {
+                    char track_str[16];
+                    int len = MIN((slash ? slash : end) - start, 15);
+                    strncpy(track_str, start, len);
+                    track_str[len] = '\0';
+                    meta->track_number = atoi(track_str);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract duration
+        char *duration_pos = strstr(ptr, "\"duration\":");
+        if (duration_pos) {
+            char *start = strchr(duration_pos + 11, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    char duration_str[32];
+                    int len = MIN(end - start, 31);
+                    strncpy(duration_str, start, len);
+                    duration_str[len] = '\0';
+                    meta->duration = (int)strtod(duration_str, NULL);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract bit_rate
+        char *bitrate_pos = strstr(ptr, "\"bit_rate\":");
+        if (bitrate_pos) {
+            char *start = strchr(bitrate_pos + 11, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    char bitrate_str[32];
+                    int len = MIN(end - start, 31);
+                    strncpy(bitrate_str, start, len);
+                    bitrate_str[len] = '\0';
+                    meta->bitrate = atoi(bitrate_str) / 1000; // Convert to kbps
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract podcast-specific metadata
+        char *description_pos = strstr(ptr, "\"description\":");
+        if (description_pos) {
+            char *start = strchr(description_pos + 14, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    g_free(meta->description);
+                    meta->description = g_strndup(start, len);
+                    any_success = TRUE;
+                }
+            }
+        }
+        
+        // Extract episode metadata from title if it looks like podcast episode
+        if (meta->title && strstr(meta->title, "Episode")) {
+            // Try to extract episode number
+            char *episode_pos = strstr(meta->title, "Episode ");
+            if (episode_pos) {
+                episode_pos += 8; // Skip "Episode "
+                meta->track_number = atoi(episode_pos);
+            }
+        }
+        
+        // Try to extract season/episode from filename if available
+        if (meta->title) {
+            // Look for patterns like S01E02, 1x02, etc.
+            char *title = meta->title;
+            char *season_pos = strstr(title, "S");
+            if (season_pos) {
+                int season = 0, episode = 0;
+                if (sscanf(season_pos, "S%dE%d", &season, &episode) == 2) {
+                    meta->disc_number = season;  // Use disc number for season
+                    meta->track_number = episode;
+                }
+            }
+        }
     }
     
-    log_message(LOG_DEBUG, "Extracted metadata: Title='%s', Artist='%s', Album='%s', Duration=%d sec, Bitrate=%d kbps", 
+    // Extract artwork safely after all text metadata is extracted
+    if (any_success) {
+        extract_artwork_ffmpeg(file_path, meta);
+    }
+    
+    log_message(LOG_DEBUG, "Extracted full metadata: Title='%s', Artist='%s', Album='%s', Genre='%s', Year=%d, Track=%d, Duration=%d sec, Bitrate=%d kbps, Artwork=%zu bytes", 
                meta->title ? meta->title : "N/A", 
                meta->artist ? meta->artist : "N/A", 
                meta->album ? meta->album : "N/A", 
-               meta->duration, meta->bitrate);
+               meta->genre ? meta->genre : "N/A",
+               meta->year, meta->track_number,
+               meta->duration, meta->bitrate,
+               meta->artwork_size);
     
-    // If duration extraction failed, try the fallback method
+    // Fallback to simple duration extraction if needed
     if (meta->duration == 0) {
         int duration = 0, bitrate = 0;
         if (extract_audio_duration(file_path, &duration, &bitrate)) {
@@ -452,7 +696,16 @@ gboolean probe_audio_file(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;
     
     // Use the comprehensive metadata extraction
-    if (extract_audio_metadata_full(file_path, meta)) {
+    gboolean success = extract_audio_metadata_full(file_path, meta);
+    
+    // If this is a podcast, extract podcast-specific metadata
+    if (meta->mediatype == ITDB_MEDIATYPE_PODCAST) {
+        extract_podcast_specific_metadata(file_path, meta);
+        log_message(LOG_DEBUG, "Extracted podcast metadata for: %s (Episode: %d, Released: %ld)", 
+                   file_path, meta->track_number, meta->time_released);
+    }
+    
+    if (success) {
         log_message(LOG_DEBUG, "Full metadata extraction successful for: %s", file_path);
         return TRUE;
     }
@@ -477,10 +730,24 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     Itdb_Track *track = itdb_track_new();
     if (!track) return NULL;
     
-    // Set only essential metadata to avoid database corruption
+    // Set comprehensive metadata for better iPod display
     track->title = g_strdup(meta->title ? meta->title : "Unknown Title");
     track->artist = g_strdup(meta->artist ? meta->artist : "Unknown Artist");
     track->album = g_strdup(meta->album ? meta->album : "Unknown Album");
+    track->genre = g_strdup(meta->genre ? meta->genre : "Unknown");
+    
+    // Optional metadata fields that enhance the iPod experience
+    if (meta->composer && strlen(meta->composer) > 0) {
+        track->composer = g_strdup(meta->composer);
+    }
+    if (meta->albumartist && strlen(meta->albumartist) > 0) {
+        track->albumartist = g_strdup(meta->albumartist);
+    }
+    
+    // Additional metadata for better organization
+    track->year = meta->year > 0 ? meta->year : 2024;
+    track->track_nr = meta->track_number > 0 ? meta->track_number : 1;
+    track->cd_nr = meta->disc_number > 0 ? meta->disc_number : 1;
     
     // Essential timing and quality information
     track->tracklen = meta->duration * 1000; // Convert to milliseconds (CRITICAL for playback)
@@ -524,15 +791,67 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     track->time_added = time(NULL);
     track->time_modified = track->time_added;
     
+    // Add artwork using libgpod API if available
+    if (meta->artwork_data && meta->artwork_size > 0) {
+        // Create temporary file for libgpod artwork functions
+        char temp_artwork[256];
+        snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.jpg", getpid());
+        
+        FILE *temp_file = fopen(temp_artwork, "wb");
+        if (temp_file) {
+            fwrite(meta->artwork_data, 1, meta->artwork_size, temp_file);
+            fclose(temp_file);
+            
+            // Use libgpod to set artwork (proper method that won't interfere with metadata)
+            gboolean artwork_added = itdb_track_set_thumbnails(track, temp_artwork);
+            
+            if (artwork_added) {
+                log_message(LOG_DEBUG, "Successfully added artwork to track: %s (%zu bytes)", 
+                           track->title, meta->artwork_size);
+            } else {
+                log_message(LOG_WARNING, "Failed to add artwork to track: %s", track->title);
+            }
+            
+            // Clean up temporary file
+            unlink(temp_artwork);
+        } else {
+            log_message(LOG_WARNING, "Failed to create temporary artwork file for track: %s", track->title);
+        }
+    }
+    
     // Set media-type specific attributes
     if (track->mediatype == ITDB_MEDIATYPE_PODCAST) {
         track->flag4 = 0x01;  // Podcast flag
-        track->mark_unplayed = 0x02;  // Mark as new
+        track->mark_unplayed = meta->mark_unplayed ? 0x02 : 0x01;  // Mark as new if specified
         track->remember_playback_position = TRUE;
         track->skip_when_shuffling = TRUE;
         track->bookmark_time = 0;
         
-        log_message(LOG_DEBUG, "Set podcast attributes for track: %s", track->title);
+        // Set podcast-specific metadata for better iPod display
+        if (meta->description && strlen(meta->description) > 0) {
+            track->description = g_strdup(meta->description);
+        }
+        if (meta->subtitle && strlen(meta->subtitle) > 0) {
+            track->subtitle = g_strdup(meta->subtitle);
+        }
+        if (meta->category && strlen(meta->category) > 0) {
+            track->category = g_strdup(meta->category);
+        }
+        if (meta->podcasturl && strlen(meta->podcasturl) > 0) {
+            track->podcasturl = g_strdup(meta->podcasturl);
+        }
+        if (meta->podcastrss && strlen(meta->podcastrss) > 0) {
+            track->podcastrss = g_strdup(meta->podcastrss);
+        }
+        
+        // Set release date for proper podcast chronology
+        if (meta->time_released > 0) {
+            track->time_released = meta->time_released;
+            track->time_modified = meta->time_released;  // Use release date as modification time
+        }
+        
+        log_message(LOG_DEBUG, "Set podcast attributes for track: %s (Episode: %d, Season: %d, Released: %ld)", 
+                   track->title, track->track_nr, track->cd_nr, track->time_released);
     } else if (track->mediatype == ITDB_MEDIATYPE_AUDIO) {
         // CRITICAL: Ensure music tracks have proper attributes for iPod menu access
         track->flag4 = 0x00;  // No special flags for music
@@ -540,18 +859,6 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
         track->remember_playback_position = FALSE;
         track->skip_when_shuffling = FALSE;
         track->bookmark_time = 0;
-        
-        // Essential for music tracks to appear in iPod Music menu
-        track->year = meta->year > 0 ? meta->year : 2024;  // Set a valid year
-        track->track_nr = meta->track_number > 0 ? meta->track_number : 1;  // Track number
-        track->cd_nr = meta->disc_number > 0 ? meta->disc_number : 1;  // Disc number
-        
-        // Genre is important for music categorization
-        if (meta->genre && strlen(meta->genre) > 0) {
-            track->genre = g_strdup(meta->genre);
-        } else {
-            track->genre = g_strdup("Unknown");  // Default genre
-        }
         
         log_message(LOG_DEBUG, "Set music attributes for track: %s (year: %d, track: %d)", 
                    track->title, track->year, track->track_nr);

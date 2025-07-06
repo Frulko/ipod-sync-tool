@@ -75,6 +75,11 @@ typedef struct {
     char *category;
     time_t time_released;
     gboolean mark_unplayed;
+    
+    // Artwork/Cover fields
+    guchar *artwork_data;
+    gsize artwork_size;
+    char *artwork_format;  // "jpeg", "png", etc.
 } AudioMetadata;
 
 typedef struct {

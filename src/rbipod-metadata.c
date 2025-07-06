@@ -206,5 +206,8 @@ void free_metadata(AudioMetadata *meta) {
     g_free(meta->description);
     g_free(meta->subtitle);
     g_free(meta->category);
+    // Free artwork data
+    g_free(meta->artwork_data);
+    g_free(meta->artwork_format);
     g_free(meta);
 }
