@@ -818,7 +818,7 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
                         } else {
                             log_message(LOG_WARNING, "Direct artwork extraction also failed for: %s", track->title);
                         }
-                        unlink(direct_artwork);
+                        //unlink(direct_artwork);
                     }
                 }
             } else {
@@ -827,7 +827,7 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
             }
             
             // Clean up temporary file
-            unlink(temp_artwork);
+            //unlink(temp_artwork);
         } else {
             log_message(LOG_WARNING, "Failed to create temporary artwork file for track: %s", track->title);
         }

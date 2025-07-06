@@ -110,6 +110,27 @@ info:
 test-compile: $(OBJECTS)
 	@echo "Compilation test successful"
 
+# Test targets
+.PHONY: tests
+tests:
+	cd tests && $(MAKE) all
+
+.PHONY: test
+test:
+	cd tests && $(MAKE) test
+
+.PHONY: test-unit
+test-unit:
+	cd tests && $(MAKE) test-unit
+
+.PHONY: test-fixtures
+test-fixtures:
+	cd tests && $(MAKE) fixtures
+
+.PHONY: clean-tests
+clean-tests:
+	cd tests && $(MAKE) clean-all
+
 # Help target
 .PHONY: help
 help:
@@ -123,6 +144,11 @@ help:
 	@echo "  check-deps   - Check if dependencies are installed"
 	@echo "  info         - Show build configuration"
 	@echo "  test-compile - Test compilation without linking"
+	@echo "  tests        - Build all tests"
+	@echo "  test         - Run all tests"
+	@echo "  test-unit    - Run unit tests only"
+	@echo "  test-fixtures- Create test fixtures"
+	@echo "  clean-tests  - Clean test artifacts"
 	@echo "  help         - Show this help message"
 
 # Dependency tracking
