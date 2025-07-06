@@ -184,6 +184,14 @@ int main(int argc, char *argv[]) {
         } else {
             result = command_sync_folder_filtered(mount_point, argv[3], argv[4]);
         }
+    } else if (strcmp(command, "reset") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: reset command requires media type\n");
+            fprintf(stderr, "Usage: %s reset <mount_point> <mediatype>\n", argv[0]);
+            result = 1;
+        } else {
+            result = command_reset_media_type(mount_point, argv[3]);
+        }
     } else {
         fprintf(stderr, "Error: Unknown command '%s'\n\n", command);
         print_usage(argv[0]);

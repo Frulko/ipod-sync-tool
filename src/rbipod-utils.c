@@ -75,7 +75,8 @@ void print_usage(const char *program_name) {
     printf("  sync-file <mount_point> <file> [--mediatype type]   Synchronize single file with iPod\n");
     printf("  sync-folder-filtered <mount_point> <folder> <mediatype>  Synchronize folder with specific media type\n");
     printf("  list <mount_point>                         List all tracks on iPod\n");
-    printf("  info <mount_point>                         Show detailed iPod information\n\n");
+    printf("  info <mount_point>                         Show detailed iPod information\n");
+    printf("  reset <mount_point> <mediatype>           Remove all tracks of specified media type\n\n");
     
     printf("OTHER COMMANDS:\n");
     printf("  version                        Show version information\n");
@@ -93,7 +94,8 @@ void print_usage(const char *program_name) {
     printf("  %s sync-folder-filtered /media/ipod /home/user/Podcasts podcast      # Sync folder as podcasts\n", program_name);
     printf("  %s sync-folder-filtered /media/ipod /home/user/Audiobooks audiobook  # Sync folder as audiobooks\n", program_name);
     printf("  %s list /media/ipod                                      # List tracks\n", program_name);
-    printf("  %s info /media/ipod                                      # Show device info\n\n", program_name);
+    printf("  %s info /media/ipod                                      # Show device info\n", program_name);
+    printf("  %s reset /media/ipod podcast                             # Remove all podcasts\n\n", program_name);
     
     printf("FILESYSTEM SUPPORT:\n");
     printf("  • FAT32 (most common iPod format)\n");

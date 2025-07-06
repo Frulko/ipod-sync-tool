@@ -426,3 +426,115 @@ int command_show_info(const char *mount_point) {
     rb_ipod_db_free(db);
     return 0;
 }
+
+int command_reset_media_type(const char *mount_point, const char *media_type_str) {
+    log_message(LOG_INFO, "Starting reset of media type: %s", media_type_str);
+    
+    if (!media_type_str) {
+        fprintf(stderr, "Error: Media type is required\n");
+        return 1;
+    }
+    
+    // Parse the media type
+    guint32 target_mediatype = parse_media_type_string(media_type_str);
+    if (target_mediatype == ITDB_MEDIATYPE_AUDIO && strcmp(media_type_str, "audio") != 0) {
+        fprintf(stderr, "Error: Invalid media type '%s'\n", media_type_str);
+        fprintf(stderr, "Valid types: audio, movie, podcast, audiobook, musicvideo, tvshow, ringtone, rental, itunes-extra, memo, itunes-u\n");
+        return 1;
+    }
+    
+    RbIpodDb *db = rb_ipod_db_new(mount_point);
+    if (!db) {
+        fprintf(stderr, "Error: Failed to initialize iPod database\n");
+        return 1;
+    }
+    
+    printf("=== RESET MEDIA TYPE: %s ===\n", get_media_type_name(target_mediatype));
+    printf("WARNING: This will remove ALL tracks of type '%s' from the iPod\n", media_type_str);
+    printf("Files will be deleted from the device and removed from database\n");
+    printf("Continue? (y/N): ");
+    
+    // Simple confirmation
+    char response;
+    if (scanf("%c", &response) != 1 || (response != 'y' && response != 'Y')) {
+        printf("Operation cancelled\n");
+        rb_ipod_db_free(db);
+        return 0;
+    }
+    
+    int removed_tracks = 0;
+    int removed_files = 0;
+    
+    // Create a list of tracks to remove (to avoid modifying list while iterating)
+    GList *tracks_to_remove = NULL;
+    
+    for (GList *item = db->itdb->tracks; item; item = item->next) {
+        Itdb_Track *track = (Itdb_Track*)item->data;
+        if (track->mediatype == target_mediatype) {
+            tracks_to_remove = g_list_prepend(tracks_to_remove, track);
+        }
+    }
+    
+    printf("Found %d tracks of type '%s' to remove\n", g_list_length(tracks_to_remove), media_type_str);
+    
+    // Remove tracks from playlists and database
+    for (GList *item = tracks_to_remove; item; item = item->next) {
+        Itdb_Track *track = (Itdb_Track*)item->data;
+        
+        // Remove file from iPod if path exists
+        if (track->ipod_path) {
+            char full_path[1024];
+            snprintf(full_path, sizeof(full_path), "%s%s", mount_point, track->ipod_path);
+            
+            if (unlink(full_path) == 0) {
+                removed_files++;
+                log_message(LOG_DEBUG, "Deleted file: %s", track->ipod_path);
+            } else {
+                log_message(LOG_WARNING, "Could not delete file: %s", track->ipod_path);
+            }
+        }
+        
+        // Remove from all playlists
+        for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
+            Itdb_Playlist *playlist = (Itdb_Playlist*)pl_item->data;
+            itdb_playlist_remove_track(playlist, track);
+        }
+        
+        // Remove from main database
+        itdb_track_remove(track);
+        removed_tracks++;
+        
+        printf("Removed: %s - %s\n", 
+               track->artist ? track->artist : "Unknown Artist",
+               track->title ? track->title : "Unknown Title");
+    }
+    
+    g_list_free(tracks_to_remove);
+    
+    // Clean up empty playlists if needed
+    if (target_mediatype == ITDB_MEDIATYPE_PODCAST) {
+        // Remove empty podcasts playlist
+        Itdb_Playlist *podcasts_pl = itdb_playlist_podcasts(db->itdb);
+        if (podcasts_pl && g_list_length(podcasts_pl->members) == 0) {
+            itdb_playlist_remove(podcasts_pl);
+            log_message(LOG_INFO, "Removed empty Podcasts playlist");
+        }
+    }
+    
+    // Save the database
+    if (!rb_ipod_db_save_sync(db)) {
+        fprintf(stderr, "Error: Failed to save iPod database\n");
+        rb_ipod_db_free(db);
+        return 1;
+    }
+    
+    printf("\n=== RESET COMPLETE ===\n");
+    printf("Media type:      %s\n", get_media_type_name(target_mediatype));
+    printf("Tracks removed:  %d\n", removed_tracks);
+    printf("Files deleted:   %d\n", removed_files);
+    printf("Database saved:  YES\n");
+    
+    rb_ipod_db_free(db);
+    log_message(LOG_INFO, "Reset completed: %d tracks of type %s removed", removed_tracks, media_type_str);
+    return 0;
+}

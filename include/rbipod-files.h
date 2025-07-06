@@ -20,4 +20,8 @@ gboolean is_supported_audio_file(const char *filename);
 Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const char *ipod_path, const char *media_type);
 gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path);
 
+// Audio metadata extraction
+gboolean extract_audio_duration(const char *file_path, int *duration, int *bitrate);
+gboolean probe_audio_file(const char *file_path, AudioMetadata *meta);
+
 #endif // RBIPOD_FILES_H

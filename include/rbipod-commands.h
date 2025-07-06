@@ -21,4 +21,7 @@ int command_sync_folder_filtered(const char *mount_point, const char *folder_pat
 int command_list_tracks(const char *mount_point);
 int command_show_info(const char *mount_point);
 
+// Reset commands
+int command_reset_media_type(const char *mount_point, const char *media_type_str);
+
 #endif // RBIPOD_COMMANDS_H
