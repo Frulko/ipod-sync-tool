@@ -272,14 +272,82 @@ int command_show_info(const char *mount_point) {
     if (!db) return 1;
     
     printf("=== IPOD INFORMATION ===\n");
-    printf("Mount point: %s\n", mount_point);
+    printf("Mount point:      %s\n", mount_point);
+    printf("Total tracks:     %d\n", g_list_length(db->itdb->tracks));
+    printf("Total playlists:  %d\n", g_list_length(db->itdb->playlists));
     
-    if (db->itdb) {
-        printf("Total tracks: %d\n", g_list_length(db->itdb->tracks));
-        printf("Total playlists: %d\n", g_list_length(db->itdb->playlists));
+    // Calculate statistics
+    gint64 total_size = 0;
+    gint64 total_duration = 0;
+    int mp3_count = 0, m4a_count = 0, other_count = 0;
+    
+    for (GList *item = db->itdb->tracks; item; item = item->next) {
+        Itdb_Track *track = (Itdb_Track*)item->data;
         
-        // TODO: Show more detailed device information
-        printf("Device information display not yet fully implemented\n");
+        total_size += track->size;
+        total_duration += track->tracklen;
+        
+        if (track->filetype) {
+            if (g_ascii_strcasecmp(track->filetype, "mp3") == 0) {
+                mp3_count++;
+            } else if (g_ascii_strcasecmp(track->filetype, "m4a") == 0) {
+                m4a_count++;
+            } else {
+                other_count++;
+            }
+        } else {
+            other_count++;
+        }
+    }
+    
+    if (total_duration > 0) {
+        int hours = total_duration / (1000 * 3600);
+        int minutes = (total_duration % (1000 * 3600)) / (1000 * 60);
+        printf("Total duration:   %dh %dm\n", hours, minutes);
+    }
+    
+    if (total_size > 0) {
+        printf("Total size:       %.1f MB\n", total_size / (1024.0 * 1024.0));
+    }
+    
+    printf("\nFile formats:\n");
+    printf("  MP3:            %d\n", mp3_count);
+    printf("  M4A/AAC:        %d\n", m4a_count);
+    printf("  Other:          %d\n", other_count);
+    
+    if (db->itdb->device) {
+        printf("\nDevice detected:  Yes\n");
+        const Itdb_IpodInfo *info = itdb_device_get_ipod_info(db->itdb->device);
+        if (info) {
+            printf("Model:            %s\n", 
+                   itdb_info_get_ipod_model_name_string(info->ipod_model));
+            printf("Generation:       %s\n", 
+                   itdb_info_get_ipod_generation_string(info->ipod_generation));
+            
+            // Add debug information
+            printf("Debug - Model enum: %d\n", info->ipod_model);
+            printf("Debug - Generation enum: %d\n", info->ipod_generation);
+        } else {
+            printf("Model:            Unable to detect (no device info)\n");
+            printf("Generation:       Unable to detect (no device info)\n");
+        }
+        
+        // Check for SysInfo file
+        char sysinfo_path[MAX_PATH_LEN];
+        snprintf(sysinfo_path, sizeof(sysinfo_path), "%s/iPod_Control/Device/SysInfo", mount_point);
+        struct stat st;
+        if (stat(sysinfo_path, &st) == 0) {
+            printf("SysInfo file:     Found (%ld bytes)\n", st.st_size);
+            if (st.st_size == 0) {
+                printf("                  WARNING: SysInfo file is empty - this explains missing device info\n");
+            }
+        } else {
+            printf("SysInfo file:     Not found\n");
+        }
+    } else {
+        printf("\nDevice detected:  No (directory mode)\n");
+        printf("Model:            N/A (directory mode)\n");
+        printf("Generation:       N/A (directory mode)\n");
     }
     
     rb_ipod_db_free(db);
