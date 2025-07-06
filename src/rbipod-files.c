@@ -166,6 +166,69 @@ gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path) {
     // Add track to database
     itdb_track_add(db->itdb, track, -1);
     
+    // Add track to appropriate special playlist based on media type
+    switch (track->mediatype) {
+        case ITDB_MEDIATYPE_PODCAST: {
+            Itdb_Playlist *podcasts_pl = itdb_playlist_podcasts(db->itdb);
+            if (!podcasts_pl) {
+                // Create podcasts playlist if it doesn't exist
+                podcasts_pl = itdb_playlist_new("Podcasts", FALSE);
+                itdb_playlist_set_podcasts(podcasts_pl);
+                itdb_playlist_add(db->itdb, podcasts_pl, -1);
+                log_message(LOG_INFO, "Created Podcasts playlist");
+            }
+            itdb_playlist_add_track(podcasts_pl, track, -1);
+            log_message(LOG_DEBUG, "Added podcast track to Podcasts playlist: %s", track->title);
+            break;
+        }
+        case ITDB_MEDIATYPE_AUDIOBOOK: {
+            // Look for existing audiobooks playlist or create one
+            Itdb_Playlist *audiobooks_pl = NULL;
+            for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
+                Itdb_Playlist *pl = (Itdb_Playlist*)pl_item->data;
+                if (pl->name && g_ascii_strcasecmp(pl->name, "Audiobooks") == 0) {
+                    audiobooks_pl = pl;
+                    break;
+                }
+            }
+            if (!audiobooks_pl) {
+                audiobooks_pl = itdb_playlist_new("Audiobooks", FALSE);
+                itdb_playlist_add(db->itdb, audiobooks_pl, -1);
+                log_message(LOG_INFO, "Created Audiobooks playlist");
+            }
+            itdb_playlist_add_track(audiobooks_pl, track, -1);
+            log_message(LOG_DEBUG, "Added audiobook track to Audiobooks playlist: %s", track->title);
+            break;
+        }
+        case ITDB_MEDIATYPE_MOVIE:
+        case ITDB_MEDIATYPE_MUSICVIDEO:
+        case ITDB_MEDIATYPE_TVSHOW: {
+            // Look for existing videos playlist or create one
+            Itdb_Playlist *videos_pl = NULL;
+            for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
+                Itdb_Playlist *pl = (Itdb_Playlist*)pl_item->data;
+                if (pl->name && g_ascii_strcasecmp(pl->name, "Videos") == 0) {
+                    videos_pl = pl;
+                    break;
+                }
+            }
+            if (!videos_pl) {
+                videos_pl = itdb_playlist_new("Videos", FALSE);
+                itdb_playlist_add(db->itdb, videos_pl, -1);
+                log_message(LOG_INFO, "Created Videos playlist");
+            }
+            itdb_playlist_add_track(videos_pl, track, -1);
+            log_message(LOG_DEBUG, "Added video track to Videos playlist: %s", track->title);
+            break;
+        }
+        case ITDB_MEDIATYPE_AUDIO:
+        default:
+            // Regular music tracks are automatically available in the Music menu
+            // No special playlist needed
+            log_message(LOG_DEBUG, "Added music track to main library: %s", track->title);
+            break;
+    }
+    
     // Update statistics
     g_sync_ctx.stats.files_added++;
     

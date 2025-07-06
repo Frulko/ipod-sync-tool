@@ -42,6 +42,8 @@ rhythmbox-ipod-sync-project/
 - **Single File Sync**: Sync individual files with specific media types
 - **Filtered Folder Sync**: Sync entire folders with forced media type classification
 - **Enhanced Media Type Support**: Support for podcasts, audiobooks, videos, etc.
+- **🎯 FIXED: Podcast Playlist Management**: Podcasts now appear correctly in iPod's Podcasts menu
+- **Smart Playlist Creation**: Automatically creates and manages special playlists for different media types
 
 ### Core Features
 - Rhythmbox-inspired robust iPod management

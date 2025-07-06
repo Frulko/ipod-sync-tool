@@ -256,10 +256,83 @@ int command_list_tracks(const char *mount_point) {
     if (!db) return 1;
     
     printf("=== IPOD TRACK LISTING ===\n");
-    printf("Total tracks: %d\n\n", g_list_length(db->itdb->tracks));
+    printf("Total tracks: %d\n", g_list_length(db->itdb->tracks));
+    printf("Total playlists: %d\n\n", g_list_length(db->itdb->playlists));
     
-    // TODO: Implement detailed track listing
-    printf("Track listing not yet implemented\n");
+    // Show playlists and their track counts
+    printf("PLAYLISTS:\n");
+    for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
+        Itdb_Playlist *pl = (Itdb_Playlist*)pl_item->data;
+        const char *playlist_type = "";
+        
+        if (itdb_playlist_is_mpl(pl)) {
+            playlist_type = " (Master)";
+        } else if (itdb_playlist_is_podcasts(pl)) {
+            playlist_type = " (Podcasts)";
+        } else if (pl->podcastflag) {
+            playlist_type = " (Podcast-flagged)";
+        }
+        
+        printf("  %-20s: %d tracks%s\n", 
+               pl->name ? pl->name : "(Unnamed)", 
+               g_list_length(pl->members),
+               playlist_type);
+    }
+    
+    // Show tracks by media type
+    printf("\nTRACKS BY MEDIA TYPE:\n");
+    int audio_count = 0, podcast_count = 0, audiobook_count = 0, video_count = 0, other_count = 0;
+    
+    for (GList *item = db->itdb->tracks; item; item = item->next) {
+        Itdb_Track *track = (Itdb_Track*)item->data;
+        
+        switch (track->mediatype) {
+            case ITDB_MEDIATYPE_AUDIO:
+                audio_count++;
+                break;
+            case ITDB_MEDIATYPE_PODCAST:
+                podcast_count++;
+                break;
+            case ITDB_MEDIATYPE_AUDIOBOOK:
+                audiobook_count++;
+                break;
+            case ITDB_MEDIATYPE_MOVIE:
+            case ITDB_MEDIATYPE_MUSICVIDEO:
+            case ITDB_MEDIATYPE_TVSHOW:
+                video_count++;
+                break;
+            default:
+                other_count++;
+                break;
+        }
+    }
+    
+    printf("  Audio/Music:     %d\n", audio_count);
+    printf("  Podcasts:        %d\n", podcast_count);
+    printf("  Audiobooks:      %d\n", audiobook_count);
+    printf("  Videos:          %d\n", video_count);
+    printf("  Other:           %d\n", other_count);
+    
+    // Show some recent tracks
+    printf("\nRECENT TRACKS (last 10):\n");
+    int count = 0;
+    for (GList *item = g_list_last(db->itdb->tracks); item && count < 10; item = item->prev, count++) {
+        Itdb_Track *track = (Itdb_Track*)item->data;
+        const char *media_type_name = "Audio";
+        
+        switch (track->mediatype) {
+            case ITDB_MEDIATYPE_PODCAST: media_type_name = "Podcast"; break;
+            case ITDB_MEDIATYPE_AUDIOBOOK: media_type_name = "Audiobook"; break;
+            case ITDB_MEDIATYPE_MOVIE: media_type_name = "Movie"; break;
+            case ITDB_MEDIATYPE_MUSICVIDEO: media_type_name = "Music Video"; break;
+            case ITDB_MEDIATYPE_TVSHOW: media_type_name = "TV Show"; break;
+        }
+        
+        printf("  [%s] %s - %s\n", 
+               media_type_name,
+               track->artist ? track->artist : "Unknown Artist",
+               track->title ? track->title : "Unknown Title");
+    }
     
     rb_ipod_db_free(db);
     return 0;
