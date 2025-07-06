@@ -679,19 +679,71 @@ gboolean probe_audio_file(const char *file_path, AudioMetadata *meta) {
         gsize current_file_size = meta->file_size;
         time_t current_time_added = meta->time_added;
         
+        // Store important fields before clearing
+        guint32 saved_mediatype = meta->mediatype;
+        gint64 saved_file_size = meta->file_size;
+        time_t saved_time_added = meta->time_added;
+        
         // Clear current metadata
         free_metadata(meta);
         
         // Re-extract from filename
         AudioMetadata *filename_meta = extract_metadata_from_filename(file_path);
         if (filename_meta) {
-            *meta = *filename_meta;
-            g_free(filename_meta); // Free the container, not the content
+            // Deep copy all string fields
+            meta->title = filename_meta->title ? g_strdup(filename_meta->title) : NULL;
+            meta->artist = filename_meta->artist ? g_strdup(filename_meta->artist) : NULL;
+            meta->album = filename_meta->album ? g_strdup(filename_meta->album) : NULL;
+            meta->genre = filename_meta->genre ? g_strdup(filename_meta->genre) : NULL;
+            meta->composer = filename_meta->composer ? g_strdup(filename_meta->composer) : NULL;
+            meta->albumartist = filename_meta->albumartist ? g_strdup(filename_meta->albumartist) : NULL;
+            meta->sort_artist = filename_meta->sort_artist ? g_strdup(filename_meta->sort_artist) : NULL;
+            meta->sort_album = filename_meta->sort_album ? g_strdup(filename_meta->sort_album) : NULL;
+            meta->sort_albumartist = filename_meta->sort_albumartist ? g_strdup(filename_meta->sort_albumartist) : NULL;
+            meta->podcasturl = filename_meta->podcasturl ? g_strdup(filename_meta->podcasturl) : NULL;
+            meta->podcastrss = filename_meta->podcastrss ? g_strdup(filename_meta->podcastrss) : NULL;
+            meta->description = filename_meta->description ? g_strdup(filename_meta->description) : NULL;
+            meta->subtitle = filename_meta->subtitle ? g_strdup(filename_meta->subtitle) : NULL;
+            meta->category = filename_meta->category ? g_strdup(filename_meta->category) : NULL;
+            meta->episode_id = filename_meta->episode_id ? g_strdup(filename_meta->episode_id) : NULL;
+            meta->podcast_name = filename_meta->podcast_name ? g_strdup(filename_meta->podcast_name) : NULL;
+            meta->episode_summary = filename_meta->episode_summary ? g_strdup(filename_meta->episode_summary) : NULL;
+            meta->artwork_format = filename_meta->artwork_format ? g_strdup(filename_meta->artwork_format) : NULL;
+            
+            // Copy artwork data if present
+            if (filename_meta->artwork_data && filename_meta->artwork_size > 0) {
+                meta->artwork_data = g_malloc(filename_meta->artwork_size);
+                memcpy(meta->artwork_data, filename_meta->artwork_data, filename_meta->artwork_size);
+                meta->artwork_size = filename_meta->artwork_size;
+            } else {
+                meta->artwork_data = NULL;
+                meta->artwork_size = 0;
+            }
+            
+            // Copy numeric fields
+            meta->year = filename_meta->year;
+            meta->track_number = filename_meta->track_number;
+            meta->disc_number = filename_meta->disc_number;
+            meta->duration = filename_meta->duration;
+            meta->bitrate = filename_meta->bitrate;
+            meta->rating = filename_meta->rating;
+            meta->play_count = filename_meta->play_count;
+            meta->time_played = filename_meta->time_played;
+            meta->remember_playback_position = filename_meta->remember_playback_position;
+            meta->skip_when_shuffling = filename_meta->skip_when_shuffling;
+            meta->bookmark_time = filename_meta->bookmark_time;
+            meta->time_released = filename_meta->time_released;
+            meta->mark_unplayed = filename_meta->mark_unplayed;
+            meta->season_number = filename_meta->season_number;
+            meta->episode_number = filename_meta->episode_number;
+            
+            // Now properly free the source metadata
+            free_metadata(filename_meta);
             
             // Restore important fields
-            meta->mediatype = current_mediatype;
-            meta->file_size = current_file_size;
-            meta->time_added = current_time_added;
+            meta->mediatype = saved_mediatype;
+            meta->file_size = saved_file_size;
+            meta->time_added = saved_time_added;
         }
     }
     

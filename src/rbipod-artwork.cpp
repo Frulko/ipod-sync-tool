@@ -215,8 +215,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
             if (!grouping_frames.isEmpty()) {
                 TagLib::String grouping_str = grouping_frames.front()->toString();
                 if (!grouping_str.isEmpty()) {
+                    std::string grouping_std = grouping_str.to8Bit(true);
                     if (meta->episode_id) g_free(meta->episode_id);
-                    meta->episode_id = g_strdup(grouping_str.to8Bit(true).c_str());
+                    meta->episode_id = g_strdup(grouping_std.c_str());
                     found_any = TRUE;
                     g_print("[DEBUG] Extracted GROUPING: '%s'\n", meta->episode_id);
                 }
@@ -227,8 +228,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
             if (!subtitle_frames.isEmpty()) {
                 TagLib::String subtitle_str = subtitle_frames.front()->toString();
                 if (!subtitle_str.isEmpty()) {
+                    std::string subtitle_std = subtitle_str.to8Bit(true);
                     if (meta->subtitle) g_free(meta->subtitle);
-                    meta->subtitle = g_strdup(subtitle_str.to8Bit(true).c_str());
+                    meta->subtitle = g_strdup(subtitle_std.c_str());
                     found_any = TRUE;
                     g_print("[DEBUG] Extracted SUBTITLE: '%s'\n", meta->subtitle);
                 }
@@ -244,8 +246,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
                         dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
                     if (txxx && txxx->description().upper() == "CATEGORY") {
                         if (!txxx->fieldList().isEmpty()) {
+                            std::string category_std = txxx->fieldList().back().to8Bit(true);
                             if (meta->category) g_free(meta->category);
-                            meta->category = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                            meta->category = g_strdup(category_std.c_str());
                             found_any = TRUE;
                             g_print("[DEBUG] Extracted CATEGORY: '%s'\n", meta->category);
                             break;
@@ -262,8 +265,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
                 if (txxx && (txxx->description().upper() == "PODCAST" || 
                             txxx->description().upper() == "PODCASTNAME")) {
                     if (!txxx->fieldList().isEmpty()) {
+                        std::string podcast_std = txxx->fieldList().back().to8Bit(true);
                         if (meta->podcast_name) g_free(meta->podcast_name);
-                        meta->podcast_name = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                        meta->podcast_name = g_strdup(podcast_std.c_str());
                         found_any = TRUE;
                         g_print("[DEBUG] Extracted PODCAST: '%s'\n", meta->podcast_name);
                         break;
@@ -280,8 +284,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
                         dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
                     if (txxx && txxx->description().upper() == "PODCASTURL") {
                         if (!txxx->fieldList().isEmpty()) {
+                            std::string podcasturl_std = txxx->fieldList().back().to8Bit(true);
                             if (meta->podcasturl) g_free(meta->podcasturl);
-                            meta->podcasturl = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                            meta->podcasturl = g_strdup(podcasturl_std.c_str());
                             found_any = TRUE;
                             g_print("[DEBUG] Extracted PODCASTURL: '%s'\n", meta->podcasturl);
                             break;
@@ -296,8 +301,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
                     dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
                 if (txxx && txxx->description().upper() == "PODCASTRSS") {
                     if (!txxx->fieldList().isEmpty()) {
+                        std::string podcastrss_std = txxx->fieldList().back().to8Bit(true);
                         if (meta->podcastrss) g_free(meta->podcastrss);
-                        meta->podcastrss = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                        meta->podcastrss = g_strdup(podcastrss_std.c_str());
                         found_any = TRUE;
                         g_print("[DEBUG] Extracted PODCASTRSS: '%s'\n", meta->podcastrss);
                         break;
@@ -312,8 +318,9 @@ extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, Aud
                 if (txxx && (txxx->description().upper() == "DESCRIPTION" ||
                             txxx->description().upper() == "EPISODESUMMARY")) {
                     if (!txxx->fieldList().isEmpty()) {
+                        std::string episode_summary_std = txxx->fieldList().back().to8Bit(true);
                         if (meta->episode_summary) g_free(meta->episode_summary);
-                        meta->episode_summary = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                        meta->episode_summary = g_strdup(episode_summary_std.c_str());
                         found_any = TRUE;
                         g_print("[DEBUG] Extracted DESCRIPTION: '%s'\n", meta->episode_summary);
                         break;
