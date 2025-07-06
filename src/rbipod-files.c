@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <unistd.h>
 #include <glib.h>
 #include <gpod/itdb.h>
 
@@ -33,15 +35,45 @@ char* utf8_to_ascii(const char *utf8_string) {
 char* generate_ipod_filename(const char *mount_point, const char *original_filename) {
     if (!mount_point || !original_filename) return NULL;
     
-    // TODO: Implement proper iPod filename generation
-    // For now, generate a simple path
-    char *dir = build_ipod_dir_name(mount_point);
+    // Generate a proper iPod path using F00 directory structure
     char *basename = g_path_get_basename(original_filename);
-    char *result = g_strdup_printf("%s/%s", dir, basename);
+    char *result = g_strdup_printf("%s/iPod_Control/Music/F00/%s", mount_point, basename);
     
-    g_free(dir);
     g_free(basename);
     return result;
+}
+
+gboolean ensure_ipod_directory_structure(const char *mount_point) {
+    if (!mount_point) return FALSE;
+    
+    char ipod_control[1024];
+    char music_dir[1024];
+    char f00_dir[1024];
+    
+    snprintf(ipod_control, sizeof(ipod_control), "%s/iPod_Control", mount_point);
+    snprintf(music_dir, sizeof(music_dir), "%s/iPod_Control/Music", mount_point);
+    snprintf(f00_dir, sizeof(f00_dir), "%s/iPod_Control/Music/F00", mount_point);
+    
+    // Create iPod_Control directory
+    if (mkdir(ipod_control, 0755) != 0 && errno != EEXIST) {
+        log_message(LOG_ERROR, "Failed to create iPod_Control directory: %s", strerror(errno));
+        return FALSE;
+    }
+    
+    // Create Music directory
+    if (mkdir(music_dir, 0755) != 0 && errno != EEXIST) {
+        log_message(LOG_ERROR, "Failed to create Music directory: %s", strerror(errno));
+        return FALSE;
+    }
+    
+    // Create F00 subdirectory (iPods use F00, F01, etc. for organization)
+    if (mkdir(f00_dir, 0755) != 0 && errno != EEXIST) {
+        log_message(LOG_ERROR, "Failed to create F00 directory: %s", strerror(errno));
+        return FALSE;
+    }
+    
+    log_message(LOG_DEBUG, "iPod directory structure ensured");
+    return TRUE;
 }
 
 gboolean copy_file_to_ipod(const char *source_path, const char *dest_path) {
@@ -49,15 +81,65 @@ gboolean copy_file_to_ipod(const char *source_path, const char *dest_path) {
     
     log_message(LOG_INFO, "Copying file from %s to %s", source_path, dest_path);
     
-    // TODO: Implement proper file copying with error handling
-    // For now, just check if source exists
+    // Check if source exists
     struct stat source_stat;
     if (stat(source_path, &source_stat) != 0) {
         log_message(LOG_ERROR, "Source file does not exist: %s", source_path);
         return FALSE;
     }
     
-    return TRUE;
+    // Ensure destination directory exists
+    char *dest_dir = g_path_get_dirname(dest_path);
+    if (mkdir(dest_dir, 0755) != 0 && errno != EEXIST) {
+        log_message(LOG_WARNING, "Could not create destination directory: %s", dest_dir);
+    }
+    g_free(dest_dir);
+    
+    // Open source file
+    FILE *source = fopen(source_path, "rb");
+    if (!source) {
+        log_message(LOG_ERROR, "Cannot open source file: %s", source_path);
+        return FALSE;
+    }
+    
+    // Open destination file
+    FILE *dest = fopen(dest_path, "wb");
+    if (!dest) {
+        log_message(LOG_ERROR, "Cannot create destination file: %s", dest_path);
+        fclose(source);
+        return FALSE;
+    }
+    
+    // Copy file in chunks
+    char buffer[8192];
+    size_t bytes_read;
+    gboolean success = TRUE;
+    
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), source)) > 0) {
+        if (fwrite(buffer, 1, bytes_read, dest) != bytes_read) {
+            log_message(LOG_ERROR, "Error writing to destination file: %s", dest_path);
+            success = FALSE;
+            break;
+        }
+    }
+    
+    // Check for read errors
+    if (ferror(source)) {
+        log_message(LOG_ERROR, "Error reading from source file: %s", source_path);
+        success = FALSE;
+    }
+    
+    fclose(source);
+    fclose(dest);
+    
+    if (success) {
+        log_message(LOG_DEBUG, "File copied successfully: %s -> %s", source_path, dest_path);
+    } else {
+        // Clean up failed copy
+        unlink(dest_path);
+    }
+    
+    return success;
 }
 
 gboolean is_supported_audio_file(const char *filename) {
@@ -343,8 +425,13 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     track->time_modified = meta->time_added;
     track->time_played = meta->time_played;
     
-    // File information
-    track->ipod_path = g_strdup(ipod_path);
+    // File information - iPod path should be relative to mount point
+    // Extract the relative path from the full path
+    const char *relative_path = ipod_path;
+    if (g_str_has_prefix(ipod_path, "/media/ipod")) {
+        relative_path = ipod_path + strlen("/media/ipod");
+    }
+    track->ipod_path = g_strdup(relative_path);
     track->mediatype = meta->mediatype;
     
     // Set file type based on extension
@@ -411,6 +498,13 @@ gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path) {
     // Probe audio file for duration and bitrate
     if (!probe_audio_file(file_path, meta)) {
         log_message(LOG_WARNING, "Could not extract audio duration from %s, using defaults", file_path);
+    }
+    
+    // Ensure iPod directory structure exists
+    if (!ensure_ipod_directory_structure(db->mount_point)) {
+        log_message(LOG_ERROR, "Failed to create iPod directory structure");
+        free_metadata(meta);
+        return FALSE;
     }
     
     // Generate iPod filename

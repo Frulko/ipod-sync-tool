@@ -13,6 +13,7 @@ char* utf8_to_ascii(const char *utf8_string);
 char* generate_ipod_filename(const char *mount_point, const char *original_filename);
 
 // File operations
+gboolean ensure_ipod_directory_structure(const char *mount_point);
 gboolean copy_file_to_ipod(const char *source_path, const char *dest_path);
 gboolean is_supported_audio_file(const char *filename);
 
