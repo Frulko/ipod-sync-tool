@@ -546,3 +546,143 @@ int command_reset_media_type(const char *mount_point, const char *media_type_str
     log_message(LOG_INFO, "Reset completed: %d tracks of type %s removed", removed_tracks, media_type_str);
     return 0;
 }
+
+int command_reset_all(const char *mount_point) {
+    log_message(LOG_INFO, "Starting complete iPod reset");
+    
+    RbIpodDb *db = rb_ipod_db_new(mount_point);
+    if (!db) {
+        fprintf(stderr, "Error: Failed to initialize iPod database\n");
+        return 1;
+    }
+    
+    printf("=== COMPLETE IPOD RESET ===\n");
+    printf("WARNING: This will remove ALL tracks and playlists from the iPod\n");
+    printf("ALL music files will be deleted from the device\n");
+    printf("This operation cannot be undone!\n");
+    printf("Continue? (y/N): ");
+    
+    // Simple confirmation
+    char response;
+    if (scanf("%c", &response) != 1 || (response != 'y' && response != 'Y')) {
+        printf("Operation cancelled\n");
+        rb_ipod_db_free(db);
+        return 0;
+    }
+    
+    int total_tracks = g_list_length(db->itdb->tracks);
+    int total_playlists = g_list_length(db->itdb->playlists);
+    int removed_tracks = 0;
+    int removed_files = 0;
+    int removed_playlists = 0;
+    
+    printf("Found %d tracks and %d playlists to remove\n", total_tracks, total_playlists);
+    
+    // Create a list of tracks to remove (to avoid modifying list while iterating)
+    GList *tracks_to_remove = NULL;
+    for (GList *item = db->itdb->tracks; item; item = item->next) {
+        tracks_to_remove = g_list_prepend(tracks_to_remove, item->data);
+    }
+    
+    // Remove all tracks and their files
+    for (GList *item = tracks_to_remove; item; item = item->next) {
+        Itdb_Track *track = (Itdb_Track*)item->data;
+        
+        // Store track info before removal
+        char *artist_copy = track->artist ? g_strdup(track->artist) : g_strdup("Unknown Artist");
+        char *title_copy = track->title ? g_strdup(track->title) : g_strdup("Unknown Title");
+        char *ipod_path_copy = track->ipod_path ? g_strdup(track->ipod_path) : NULL;
+        
+        // Remove file from iPod if path exists
+        if (ipod_path_copy) {
+            char full_path[1024];
+            snprintf(full_path, sizeof(full_path), "%s%s", mount_point, ipod_path_copy);
+            
+            if (unlink(full_path) == 0) {
+                removed_files++;
+                log_message(LOG_DEBUG, "Deleted file: %s", ipod_path_copy);
+            } else {
+                log_message(LOG_DEBUG, "Could not delete file: %s (may not exist)", ipod_path_copy);
+            }
+        }
+        
+        // Remove from all playlists
+        for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
+            Itdb_Playlist *playlist = (Itdb_Playlist*)pl_item->data;
+            itdb_playlist_remove_track(playlist, track);
+        }
+        
+        // Remove from main database
+        itdb_track_remove(track);
+        removed_tracks++;
+        
+        if (removed_tracks % 10 == 0 || removed_tracks == total_tracks) {
+            printf("Progress: %d/%d tracks removed\n", removed_tracks, total_tracks);
+        }
+        
+        // Free our copies
+        g_free(artist_copy);
+        g_free(title_copy);
+        if (ipod_path_copy) g_free(ipod_path_copy);
+    }
+    
+    g_list_free(tracks_to_remove);
+    
+    // Remove all non-master playlists
+    GList *playlists_to_remove = NULL;
+    for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
+        Itdb_Playlist *playlist = (Itdb_Playlist*)pl_item->data;
+        // Keep only the master playlist
+        if (!itdb_playlist_is_mpl(playlist)) {
+            playlists_to_remove = g_list_prepend(playlists_to_remove, playlist);
+        }
+    }
+    
+    for (GList *item = playlists_to_remove; item; item = item->next) {
+        Itdb_Playlist *playlist = (Itdb_Playlist*)item->data;
+        log_message(LOG_DEBUG, "Removing playlist: %s", playlist->name ? playlist->name : "(Unnamed)");
+        itdb_playlist_remove(playlist);
+        removed_playlists++;
+    }
+    
+    g_list_free(playlists_to_remove);
+    
+    // Clean up empty music directories
+    char music_dir[1024];
+    snprintf(music_dir, sizeof(music_dir), "%s/iPod_Control/Music", mount_point);
+    
+    // Try to remove all F** directories
+    for (int i = 0; i < 100; i++) {
+        char subdir[1024];
+        snprintf(subdir, sizeof(subdir), "%s/F%02d", music_dir, i);
+        
+        // Remove all files in the directory first
+        char command[2048];
+        snprintf(command, sizeof(command), "rm -f \"%s\"/* 2>/dev/null", subdir);
+        system(command);
+        
+        // Try to remove the directory (will only work if empty)
+        if (rmdir(subdir) == 0) {
+            log_message(LOG_DEBUG, "Removed empty directory: %s", subdir);
+        }
+    }
+    
+    // Save the cleaned database
+    if (!rb_ipod_db_save_sync(db)) {
+        fprintf(stderr, "Error: Failed to save iPod database\n");
+        rb_ipod_db_free(db);
+        return 1;
+    }
+    
+    printf("\n=== COMPLETE RESET FINISHED ===\n");
+    printf("Tracks removed:    %d\n", removed_tracks);
+    printf("Files deleted:     %d\n", removed_files);
+    printf("Playlists removed: %d\n", removed_playlists);
+    printf("Database cleared:  YES\n");
+    printf("iPod is now completely clean\n");
+    
+    rb_ipod_db_free(db);
+    log_message(LOG_INFO, "Complete reset finished: %d tracks, %d files, %d playlists removed", 
+               removed_tracks, removed_files, removed_playlists);
+    return 0;
+}

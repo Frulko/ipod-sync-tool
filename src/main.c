@@ -188,7 +188,10 @@ int main(int argc, char *argv[]) {
         if (argc < 4) {
             fprintf(stderr, "Error: reset command requires media type\n");
             fprintf(stderr, "Usage: %s reset <mount_point> <mediatype>\n", argv[0]);
+            fprintf(stderr, "       %s reset <mount_point> all\n", argv[0]);
             result = 1;
+        } else if (strcmp(argv[3], "all") == 0) {
+            result = command_reset_all(mount_point);
         } else {
             result = command_reset_media_type(mount_point, argv[3]);
         }

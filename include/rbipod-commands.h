@@ -23,5 +23,6 @@ int command_show_info(const char *mount_point);
 
 // Reset commands
 int command_reset_media_type(const char *mount_point, const char *media_type_str);
+int command_reset_all(const char *mount_point);
 
 #endif // RBIPOD_COMMANDS_H
