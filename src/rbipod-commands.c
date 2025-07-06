@@ -481,16 +481,21 @@ int command_reset_media_type(const char *mount_point, const char *media_type_str
     for (GList *item = tracks_to_remove; item; item = item->next) {
         Itdb_Track *track = (Itdb_Track*)item->data;
         
+        // Store track info before removal (since track memory will be freed)
+        char *artist_copy = track->artist ? g_strdup(track->artist) : g_strdup("Unknown Artist");
+        char *title_copy = track->title ? g_strdup(track->title) : g_strdup("Unknown Title");
+        char *ipod_path_copy = track->ipod_path ? g_strdup(track->ipod_path) : NULL;
+        
         // Remove file from iPod if path exists
-        if (track->ipod_path) {
+        if (ipod_path_copy) {
             char full_path[1024];
-            snprintf(full_path, sizeof(full_path), "%s%s", mount_point, track->ipod_path);
+            snprintf(full_path, sizeof(full_path), "%s%s", mount_point, ipod_path_copy);
             
             if (unlink(full_path) == 0) {
                 removed_files++;
-                log_message(LOG_DEBUG, "Deleted file: %s", track->ipod_path);
+                log_message(LOG_DEBUG, "Deleted file: %s", ipod_path_copy);
             } else {
-                log_message(LOG_WARNING, "Could not delete file: %s", track->ipod_path);
+                log_message(LOG_WARNING, "Could not delete file: %s", ipod_path_copy);
             }
         }
         
@@ -504,9 +509,12 @@ int command_reset_media_type(const char *mount_point, const char *media_type_str
         itdb_track_remove(track);
         removed_tracks++;
         
-        printf("Removed: %s - %s\n", 
-               track->artist ? track->artist : "Unknown Artist",
-               track->title ? track->title : "Unknown Title");
+        printf("Removed: %s - %s\n", artist_copy, title_copy);
+        
+        // Free our copies
+        g_free(artist_copy);
+        g_free(title_copy);
+        if (ipod_path_copy) g_free(ipod_path_copy);
     }
     
     g_list_free(tracks_to_remove);
