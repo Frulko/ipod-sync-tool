@@ -780,56 +780,38 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     track->time_added = time(NULL);
     track->time_modified = track->time_added;
     
-    // Add artwork using libgpod API if available
+    // Add artwork using libgpod memory-based API if available
     if (meta->artwork_data && meta->artwork_size > 0) {
-        // Create temporary file for libgpod artwork functions
-        char temp_artwork[256];
-        const char *ext = (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpg";
-        snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.%s", getpid(), ext);
+        // Use itdb_track_set_thumbnails_from_data for direct memory-based artwork handling
+        // This is more efficient than creating temporary files
+        gboolean artwork_added = itdb_track_set_thumbnails_from_data(track, meta->artwork_data, meta->artwork_size);
         
-        FILE *temp_file = fopen(temp_artwork, "wb");
-        if (temp_file) {
-            size_t written = fwrite(meta->artwork_data, 1, meta->artwork_size, temp_file);
-            fclose(temp_file);
+        if (artwork_added) {
+            const char *ext = (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpg";
+            log_message(LOG_DEBUG, "Successfully added artwork to track: %s (%zu bytes, format: %s)", 
+                       track->title, meta->artwork_size, ext);
+        } else {
+            log_message(LOG_WARNING, "Failed to add artwork to track: %s (libgpod memory-based error)", track->title);
             
-            if (written == meta->artwork_size) {
-                // Use libgpod to set artwork (proper method that won't interfere with metadata)
-                GError *error = NULL;
-                gboolean artwork_added = itdb_track_set_thumbnails(track, temp_artwork);
+            // Fallback: Use traditional file-based method if memory-based fails
+            char temp_artwork[256];
+            const char *ext = (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpg";
+            snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.%s", getpid(), ext);
+            
+            FILE *temp_file = fopen(temp_artwork, "wb");
+            if (temp_file) {
+                size_t written = fwrite(meta->artwork_data, 1, meta->artwork_size, temp_file);
+                fclose(temp_file);
                 
-                if (artwork_added) {
-                    log_message(LOG_DEBUG, "Successfully added artwork to track: %s (%zu bytes, format: %s)", 
-                               track->title, meta->artwork_size, ext);
-                } else {
-                    log_message(LOG_WARNING, "Failed to add artwork to track: %s (libgpod error)", track->title);
-                    
-                    // Try alternative: extract artwork again using ffmpeg directly
-                    char ffmpeg_cmd[1024];
-                    snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd), 
-                             "ffmpeg -i \"%s\" -an -vcodec copy \"%s_direct.jpg\" -y 2>/dev/null", 
-                             track->ipod_path, temp_artwork);
-                    
-                    if (system(ffmpeg_cmd) == 0) {
-                        char direct_artwork[512];
-                        snprintf(direct_artwork, sizeof(direct_artwork), "%s_direct.jpg", temp_artwork);
-                        
-                        if (itdb_track_set_thumbnails(track, direct_artwork)) {
-                            log_message(LOG_DEBUG, "Successfully added artwork using direct extraction: %s", track->title);
-                        } else {
-                            log_message(LOG_WARNING, "Direct artwork extraction also failed for: %s", track->title);
-                        }
-                        //unlink(direct_artwork);
+                if (written == meta->artwork_size) {
+                    if (itdb_track_set_thumbnails(track, temp_artwork)) {
+                        log_message(LOG_DEBUG, "Successfully added artwork using file-based fallback: %s", track->title);
+                    } else {
+                        log_message(LOG_WARNING, "Both memory-based and file-based artwork methods failed for: %s", track->title);
                     }
                 }
-            } else {
-                log_message(LOG_WARNING, "Failed to write complete artwork file for track: %s (%zu/%zu bytes)", 
-                           track->title, written, meta->artwork_size);
+                unlink(temp_artwork); // Clean up temporary file
             }
-            
-            // Clean up temporary file
-            //unlink(temp_artwork);
-        } else {
-            log_message(LOG_WARNING, "Failed to create temporary artwork file for track: %s", track->title);
         }
     }
     
