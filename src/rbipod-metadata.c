@@ -151,6 +151,39 @@ AudioMetadata* extract_metadata_from_filename(const char *filename) {
     meta->remember_playback_position = (meta->mediatype != ITDB_MEDIATYPE_AUDIO);
     meta->skip_when_shuffling = (meta->mediatype != ITDB_MEDIATYPE_AUDIO);
     
+    // Set podcast-specific metadata if this is a podcast
+    if (meta->mediatype == ITDB_MEDIATYPE_PODCAST) {
+        // Generate synthetic podcast URL based on filename
+        meta->podcasturl = g_strdup_printf("file://%s", filename);
+        meta->podcastrss = g_strdup("http://localhost/podcast.rss");
+        
+        // Set podcast category and description
+        meta->category = g_strdup("Podcasts");
+        meta->description = g_strdup_printf("Podcast episode: %s", meta->title);
+        meta->subtitle = g_strdup(meta->title);
+        
+        // Set release time to current time if not specified
+        meta->time_released = time(NULL);
+        
+        // Mark as unplayed (new episode)
+        meta->mark_unplayed = TRUE;
+        
+        // Ensure proper podcast behavior
+        meta->remember_playback_position = TRUE;
+        meta->skip_when_shuffling = TRUE;
+        
+        log_message(LOG_DEBUG, "Set podcast-specific metadata for: %s", meta->title);
+    } else {
+        // Initialize podcast fields to NULL for non-podcasts
+        meta->podcasturl = NULL;
+        meta->podcastrss = NULL;
+        meta->description = NULL;
+        meta->subtitle = NULL;
+        meta->category = NULL;
+        meta->time_released = 0;
+        meta->mark_unplayed = FALSE;
+    }
+    
     g_free(basename);
     return meta;
 }
@@ -167,5 +200,11 @@ void free_metadata(AudioMetadata *meta) {
     g_free(meta->sort_artist);
     g_free(meta->sort_album);
     g_free(meta->sort_albumartist);
+    // Free podcast-specific fields
+    g_free(meta->podcasturl);
+    g_free(meta->podcastrss);
+    g_free(meta->description);
+    g_free(meta->subtitle);
+    g_free(meta->category);
     g_free(meta);
 }

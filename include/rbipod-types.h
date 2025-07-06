@@ -67,6 +67,14 @@ typedef struct {
     gboolean remember_playback_position;
     gboolean skip_when_shuffling;
     guint32 bookmark_time;
+    // Podcast-specific fields
+    char *podcasturl;
+    char *podcastrss;
+    char *description;
+    char *subtitle;
+    char *category;
+    time_t time_released;
+    gboolean mark_unplayed;
 } AudioMetadata;
 
 typedef struct {

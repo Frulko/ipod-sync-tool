@@ -122,6 +122,40 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
         }
     }
     
+    // Set podcast-specific attributes for proper playback
+    if (track->mediatype == ITDB_MEDIATYPE_PODCAST) {
+        // Essential podcast flags for iPod firmware
+        track->flag4 = 0x01;  // Podcast display flag
+        track->mark_unplayed = meta->mark_unplayed ? 0x02 : 0x01;  // New episode marker
+        
+        // Podcast URLs and metadata
+        if (meta->podcasturl) track->podcasturl = g_strdup(meta->podcasturl);
+        if (meta->podcastrss) track->podcastrss = g_strdup(meta->podcastrss);
+        if (meta->description) track->description = g_strdup(meta->description);
+        if (meta->subtitle) track->subtitle = g_strdup(meta->subtitle);
+        if (meta->category) track->category = g_strdup(meta->category);
+        
+        // Release date for podcast episodes
+        if (meta->time_released > 0) {
+            track->time_released = meta->time_released;
+        }
+        
+        // Podcast behavior settings
+        track->remember_playback_position = TRUE;
+        track->skip_when_shuffling = TRUE;
+        
+        // Set bookmark time to 0 for new episodes
+        track->bookmark_time = 0;
+        
+        log_message(LOG_DEBUG, "Set podcast-specific attributes for track: %s", track->title);
+    } else {
+        // Regular audio track
+        track->flag4 = 0x00;
+        track->mark_unplayed = 0x00;
+        track->remember_playback_position = FALSE;
+        track->skip_when_shuffling = FALSE;
+    }
+    
     log_message(LOG_DEBUG, "Created track: %s by %s", track->title, track->artist);
     return track;
 }
