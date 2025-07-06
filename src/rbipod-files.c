@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <glib.h>
 #include <gpod/itdb.h>
+#include <tag_c.h>
 
 #include "../include/rbipod-files.h"
 #include "../include/rbipod-logging.h"
@@ -503,227 +504,101 @@ gboolean extract_podcast_specific_metadata(const char *file_path, AudioMetadata 
     return TRUE;
 }
 
-gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta) {
+gboolean extract_audio_metadata_taglib(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;
+    
+    // Open file with TagLib
+    TagLib_File *file = taglib_file_new(file_path);
+    if (!file || !taglib_file_is_valid(file)) {
+        if (file) taglib_file_free(file);
+        return FALSE;
+    }
+    
+    // Get tag information
+    TagLib_Tag *tag = taglib_file_tag(file);
+    if (!tag) {
+        taglib_file_free(file);
+        return FALSE;
+    }
     
     gboolean any_success = FALSE;
     
-    // Extract comprehensive metadata using ffprobe (more reliable than mediainfo)
-    char command[2048];
-    snprintf(command, sizeof(command), 
-             "ffprobe -v quiet -show_format -show_streams -of json \"%s\" 2>/dev/null", 
-             file_path);
+    // Extract metadata
+    char *title = taglib_tag_title(tag);
+    char *artist = taglib_tag_artist(tag);
+    char *album = taglib_tag_album(tag);
+    char *genre = taglib_tag_genre(tag);
+    char *comment = taglib_tag_comment(tag);
     
-    FILE *pipe = popen(command, "r");
-    if (pipe) {
-        char output[8192];
-        size_t bytes_read = fread(output, 1, sizeof(output) - 1, pipe);
-        output[bytes_read] = '\0';
-        pclose(pipe);
+    // Safely copy to metadata structure
+    if (title && strlen(title) > 0) {
+        g_free(meta->title);
+        meta->title = g_strdup(title);
+        any_success = TRUE;
+    }
+    if (artist && strlen(artist) > 0) {
+        g_free(meta->artist);
+        meta->artist = g_strdup(artist);
+        any_success = TRUE;
+    }
+    if (album && strlen(album) > 0) {
+        g_free(meta->album);
+        meta->album = g_strdup(album);
+        any_success = TRUE;
+    }
+    if (genre && strlen(genre) > 0) {
+        g_free(meta->genre);
+        meta->genre = g_strdup(genre);
+        any_success = TRUE;
+    }
+    // Note: comment field not available in AudioMetadata structure
+    // if (comment && strlen(comment) > 0) {
+    //     meta->comment = g_strdup(comment);
+    //     any_success = TRUE;
+    // }
+    
+    // Extract numeric metadata
+    unsigned int year = taglib_tag_year(tag);
+    unsigned int track = taglib_tag_track(tag);
+    
+    if (year > 0) {
+        meta->year = year;
+        any_success = TRUE;
+    }
+    if (track > 0) {
+        meta->track_number = track;
+        any_success = TRUE;
+    }
+    
+    // Get audio properties
+    const TagLib_AudioProperties *props = taglib_file_audioproperties(file);
+    if (props) {
+        int duration = taglib_audioproperties_length(props);
+        int bitrate = taglib_audioproperties_bitrate(props);
         
-        // Parse JSON output manually (simple parsing for key fields)
-        char *ptr = output;
-        
-        // Extract title
-        char *title_pos = strstr(ptr, "\"title\":");
-        if (title_pos) {
-            char *start = strchr(title_pos + 8, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    g_free(meta->title);
-                    meta->title = g_strndup(start, len);
-                    any_success = TRUE;
-                }
-            }
+        if (duration > 0) {
+            meta->duration = duration;
+            any_success = TRUE;
         }
-        
-        // Extract artist
-        char *artist_pos = strstr(ptr, "\"artist\":");
-        if (artist_pos) {
-            char *start = strchr(artist_pos + 9, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    g_free(meta->artist);
-                    meta->artist = g_strndup(start, len);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract album
-        char *album_pos = strstr(ptr, "\"album\":");
-        if (album_pos) {
-            char *start = strchr(album_pos + 8, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    g_free(meta->album);
-                    meta->album = g_strndup(start, len);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract genre
-        char *genre_pos = strstr(ptr, "\"genre\":");
-        if (genre_pos) {
-            char *start = strchr(genre_pos + 8, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    g_free(meta->genre);
-                    meta->genre = g_strndup(start, len);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract composer
-        char *composer_pos = strstr(ptr, "\"composer\":");
-        if (composer_pos) {
-            char *start = strchr(composer_pos + 11, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    g_free(meta->composer);
-                    meta->composer = g_strndup(start, len);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract year from date
-        char *date_pos = strstr(ptr, "\"date\":");
-        if (date_pos) {
-            char *start = strchr(date_pos + 7, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    char date_str[16];
-                    int len = MIN(end - start, 15);
-                    strncpy(date_str, start, len);
-                    date_str[len] = '\0';
-                    meta->year = atoi(date_str);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract track number
-        char *track_pos = strstr(ptr, "\"track\":");
-        if (track_pos) {
-            char *start = strchr(track_pos + 8, '"');
-            if (start) {
-                start++;
-                char *slash = strchr(start, '/');
-                char *end = strchr(start, '"');
-                if (end) {
-                    char track_str[16];
-                    int len = MIN((slash ? slash : end) - start, 15);
-                    strncpy(track_str, start, len);
-                    track_str[len] = '\0';
-                    meta->track_number = atoi(track_str);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract duration
-        char *duration_pos = strstr(ptr, "\"duration\":");
-        if (duration_pos) {
-            char *start = strchr(duration_pos + 11, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    char duration_str[32];
-                    int len = MIN(end - start, 31);
-                    strncpy(duration_str, start, len);
-                    duration_str[len] = '\0';
-                    meta->duration = (int)strtod(duration_str, NULL);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract bit_rate
-        char *bitrate_pos = strstr(ptr, "\"bit_rate\":");
-        if (bitrate_pos) {
-            char *start = strchr(bitrate_pos + 11, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    char bitrate_str[32];
-                    int len = MIN(end - start, 31);
-                    strncpy(bitrate_str, start, len);
-                    bitrate_str[len] = '\0';
-                    meta->bitrate = atoi(bitrate_str) / 1000; // Convert to kbps
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract podcast-specific metadata
-        char *description_pos = strstr(ptr, "\"description\":");
-        if (description_pos) {
-            char *start = strchr(description_pos + 14, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    g_free(meta->description);
-                    meta->description = g_strndup(start, len);
-                    any_success = TRUE;
-                }
-            }
-        }
-        
-        // Extract episode metadata from title if it looks like podcast episode
-        if (meta->title && strstr(meta->title, "Episode")) {
-            // Try to extract episode number
-            char *episode_pos = strstr(meta->title, "Episode ");
-            if (episode_pos) {
-                episode_pos += 8; // Skip "Episode "
-                meta->track_number = atoi(episode_pos);
-            }
-        }
-        
-        // Try to extract season/episode from filename if available
-        if (meta->title) {
-            // Look for patterns like S01E02, 1x02, etc.
-            char *title = meta->title;
-            char *season_pos = strstr(title, "S");
-            if (season_pos) {
-                int season = 0, episode = 0;
-                if (sscanf(season_pos, "S%dE%d", &season, &episode) == 2) {
-                    meta->disc_number = season;  // Use disc number for season
-                    meta->track_number = episode;
-                }
-            }
+        if (bitrate > 0) {
+            meta->bitrate = bitrate;
+            any_success = TRUE;
         }
     }
     
-    // Extract artwork safely after all text metadata is extracted
+    // Clean up
+    taglib_file_free(file);
+    
+    // Extract artwork if TagLib extraction was successful
     if (any_success) {
-        extract_artwork_ffmpeg(file_path, meta);
+        // Try TagLib native artwork extraction first
+        if (!extract_artwork_taglib_native(file_path, meta)) {
+            // Fallback to ffmpeg if TagLib fails
+            extract_artwork_ffmpeg(file_path, meta);
+        }
     }
     
-    log_message(LOG_DEBUG, "Extracted full metadata: Title='%s', Artist='%s', Album='%s', Genre='%s', Year=%d, Track=%d, Duration=%d sec, Bitrate=%d kbps, Artwork=%zu bytes", 
+    log_message(LOG_DEBUG, "TagLib extracted metadata: Title='%s', Artist='%s', Album='%s', Genre='%s', Year=%d, Track=%d, Duration=%d sec, Bitrate=%d kbps, Artwork=%zu bytes", 
                meta->title ? meta->title : "N/A", 
                meta->artist ? meta->artist : "N/A", 
                meta->album ? meta->album : "N/A", 
@@ -732,18 +607,54 @@ gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta)
                meta->duration, meta->bitrate,
                meta->artwork_size);
     
-    // Fallback to simple duration extraction if needed
-    if (meta->duration == 0) {
-        int duration = 0, bitrate = 0;
-        if (extract_audio_duration(file_path, &duration, &bitrate)) {
-            meta->duration = duration;
-            if (meta->bitrate == 0) meta->bitrate = bitrate;
-            any_success = TRUE;
+    return any_success;
+}
+
+gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta) {
+    if (!file_path || !meta) return FALSE;
+    
+    // Try TagLib first (most reliable)
+    gboolean taglib_success = extract_audio_metadata_taglib(file_path, meta);
+    if (taglib_success) {
+        log_message(LOG_DEBUG, "TagLib extraction successful for: %s", file_path);
+        return TRUE;
+    }
+    
+    log_message(LOG_DEBUG, "TagLib extraction failed, trying fallback methods for: %s", file_path);
+    
+    gboolean any_success = FALSE;
+    
+    // Fallback: simple ffprobe for duration/bitrate only
+    char command[2048];
+    snprintf(command, sizeof(command), 
+             "ffprobe -v quiet -show_format -of default=noprint_wrappers=1:nokey=1 -select_streams a:0 \"%s\" 2>/dev/null", 
+             file_path);
+    
+    FILE *pipe = popen(command, "r");
+    if (pipe) {
+        char line[256];
+        while (fgets(line, sizeof(line), pipe)) {
+            // Simple parsing for basic info
+            if (strstr(line, "duration=")) {
+                float duration = 0;
+                if (sscanf(line, "duration=%f", &duration) == 1) {
+                    meta->duration = (int)duration;
+                    any_success = TRUE;
+                }
+            } else if (strstr(line, "bit_rate=")) {
+                int bitrate = 0;
+                if (sscanf(line, "bit_rate=%d", &bitrate) == 1) {
+                    meta->bitrate = bitrate / 1000; // Convert to kbps
+                    any_success = TRUE;
+                }
+            }
         }
+        pclose(pipe);
     }
     
     return any_success;
 }
+
 
 gboolean probe_audio_file(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;

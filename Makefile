@@ -10,22 +10,30 @@ INCLUDE_DIR = include
 
 # Compiler and flags
 CC = gcc
+CXX = g++
 CFLAGS = -Wall -Wextra -std=c99 -I$(INCLUDE_DIR)
+CXXFLAGS = -Wall -Wextra -std=c++11 -I$(INCLUDE_DIR)
 LDFLAGS = -pthread
 DEBUG_FLAGS = -g -DDEBUG
 RELEASE_FLAGS = -O2 -DNDEBUG
 
 # Package configuration
 PKG_CONFIG = pkg-config
-PACKAGES = libgpod-1.0 glib-2.0 gio-2.0
+PACKAGES = libgpod-1.0 glib-2.0 gio-2.0 taglib_c taglib
 
 # Get package flags
-CFLAGS += $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
-LDFLAGS += $(shell $(PKG_CONFIG) --libs $(PACKAGES))
+PKG_CFLAGS = $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
+PKG_LDFLAGS = $(shell $(PKG_CONFIG) --libs $(PACKAGES))
+CFLAGS += $(PKG_CFLAGS)
+CXXFLAGS += $(PKG_CFLAGS)
+LDFLAGS += $(PKG_LDFLAGS)
 
 # Source files
-SOURCES = $(wildcard $(SRC_DIR)/*.c)
-OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+C_SOURCES = $(wildcard $(SRC_DIR)/*.c)
+CXX_SOURCES = $(wildcard $(SRC_DIR)/*.cpp)
+C_OBJECTS = $(C_SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+CXX_OBJECTS = $(CXX_SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
+OBJECTS = $(C_OBJECTS) $(CXX_OBJECTS)
 TARGET = $(BUILD_DIR)/$(PROJECT_NAME)
 
 # Header dependencies
@@ -51,12 +59,15 @@ debug: $(TARGET)
 
 # Main target
 $(TARGET): $(OBJECTS) | $(BUILD_DIR)
-	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+	$(CXX) $(OBJECTS) -o $@ $(LDFLAGS)
 	@echo "Build complete: $@"
 
 # Object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Clean build artifacts
 .PHONY: clean
