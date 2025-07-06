@@ -11,6 +11,7 @@
 char* build_ipod_dir_name(const char *mount_point);
 char* utf8_to_ascii(const char *utf8_string);
 char* generate_ipod_filename(const char *mount_point, const char *original_filename);
+void initialize_ipod_file_counter(const char *mount_point);
 
 // File operations
 gboolean ensure_ipod_directory_structure(const char *mount_point);

@@ -32,14 +32,87 @@ char* utf8_to_ascii(const char *utf8_string) {
     return g_strdup(utf8_string);
 }
 
+// Global counter for iPod filename generation
+static guint32 g_ipod_file_counter = 0;
+
+// Initialize the iPod file counter based on existing files
+void initialize_ipod_file_counter(const char *mount_point) {
+    if (!mount_point) return;
+    
+    guint32 max_counter = 0;
+    
+    // Scan all F00-F49 directories for existing files
+    for (int dir_num = 0; dir_num < 50; dir_num++) {
+        char f_dir[1024];
+        snprintf(f_dir, sizeof(f_dir), "%s/iPod_Control/Music/F%02d", mount_point, dir_num);
+        
+        GDir *dir = g_dir_open(f_dir, 0, NULL);
+        if (!dir) continue;
+        
+        const char *filename;
+        while ((filename = g_dir_read_name(dir)) != NULL) {
+            // Check if filename matches iPod pattern (4 uppercase letters + extension)
+            if (strlen(filename) >= 5) {
+                char name_part[5];
+                strncpy(name_part, filename, 4);
+                name_part[4] = '\0';
+                
+                // Convert 4-letter name back to counter value
+                if (name_part[0] >= 'A' && name_part[0] <= 'Z' &&
+                    name_part[1] >= 'A' && name_part[1] <= 'Z' &&
+                    name_part[2] >= 'A' && name_part[2] <= 'Z' &&
+                    name_part[3] >= 'A' && name_part[3] <= 'Z') {
+                    
+                    guint32 name_value = 
+                        (name_part[0] - 'A') * (26 * 26 * 26) +
+                        (name_part[1] - 'A') * (26 * 26) +
+                        (name_part[2] - 'A') * 26 +
+                        (name_part[3] - 'A');
+                    
+                    guint32 estimated_counter = dir_num * 100 + name_value;
+                    if (estimated_counter > max_counter) {
+                        max_counter = estimated_counter;
+                    }
+                }
+            }
+        }
+        g_dir_close(dir);
+    }
+    
+    // Start counter after the highest existing file
+    g_ipod_file_counter = max_counter + 1;
+    
+    log_message(LOG_DEBUG, "Initialized iPod file counter to %u", g_ipod_file_counter);
+}
+
 char* generate_ipod_filename(const char *mount_point, const char *original_filename) {
     if (!mount_point || !original_filename) return NULL;
     
-    // Generate a proper iPod path using F00 directory structure
-    char *basename = g_path_get_basename(original_filename);
-    char *result = g_strdup_printf("%s/iPod_Control/Music/F00/%s", mount_point, basename);
+    // Get file extension from original filename
+    const char *ext = strrchr(original_filename, '.');
+    if (!ext) ext = ".mp3"; // Default extension
     
-    g_free(basename);
+    // Calculate which F directory to use (0-49, distributed evenly)
+    int dir_num = (g_ipod_file_counter / 100) % 50;
+    
+    // Generate 4-character filename in the style of Apple/gtkpod
+    // Format: [A-Z][A-Z][A-Z][A-Z] (uppercase letters)
+    char ipod_name[5];
+    guint32 name_id = g_ipod_file_counter % (26 * 26 * 26 * 26); // 456976 combinations
+    
+    ipod_name[0] = 'A' + (name_id / (26 * 26 * 26)) % 26;
+    ipod_name[1] = 'A' + (name_id / (26 * 26)) % 26;
+    ipod_name[2] = 'A' + (name_id / 26) % 26;
+    ipod_name[3] = 'A' + name_id % 26;
+    ipod_name[4] = '\0';
+    
+    // Increment counter for next file
+    g_ipod_file_counter++;
+    
+    char *result = g_strdup_printf("%s/iPod_Control/Music/F%02d/%s%s", 
+                                   mount_point, dir_num, ipod_name, ext);
+    
+    log_message(LOG_DEBUG, "Generated iPod filename: %s (counter: %u)", result, g_ipod_file_counter - 1);
     return result;
 }
 
@@ -48,11 +121,9 @@ gboolean ensure_ipod_directory_structure(const char *mount_point) {
     
     char ipod_control[1024];
     char music_dir[1024];
-    char f00_dir[1024];
     
     snprintf(ipod_control, sizeof(ipod_control), "%s/iPod_Control", mount_point);
     snprintf(music_dir, sizeof(music_dir), "%s/iPod_Control/Music", mount_point);
-    snprintf(f00_dir, sizeof(f00_dir), "%s/iPod_Control/Music/F00", mount_point);
     
     // Create iPod_Control directory
     if (mkdir(ipod_control, 0755) != 0 && errno != EEXIST) {
@@ -66,13 +137,18 @@ gboolean ensure_ipod_directory_structure(const char *mount_point) {
         return FALSE;
     }
     
-    // Create F00 subdirectory (iPods use F00, F01, etc. for organization)
-    if (mkdir(f00_dir, 0755) != 0 && errno != EEXIST) {
-        log_message(LOG_ERROR, "Failed to create F00 directory: %s", strerror(errno));
-        return FALSE;
+    // Create all F00-F49 subdirectories (standard iPod structure)
+    for (int i = 0; i < 50; i++) {
+        char f_dir[1024];
+        snprintf(f_dir, sizeof(f_dir), "%s/iPod_Control/Music/F%02d", mount_point, i);
+        
+        if (mkdir(f_dir, 0755) != 0 && errno != EEXIST) {
+            log_message(LOG_WARNING, "Failed to create directory F%02d: %s", i, strerror(errno));
+            // Continue with other directories even if one fails
+        }
     }
     
-    log_message(LOG_DEBUG, "iPod directory structure ensured");
+    log_message(LOG_DEBUG, "iPod directory structure ensured (F00-F49)");
     return TRUE;
 }
 
@@ -401,85 +477,88 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     Itdb_Track *track = itdb_track_new();
     if (!track) return NULL;
     
-    // Set basic metadata
+    // Set only essential metadata to avoid database corruption
     track->title = g_strdup(meta->title ? meta->title : "Unknown Title");
     track->artist = g_strdup(meta->artist ? meta->artist : "Unknown Artist");
     track->album = g_strdup(meta->album ? meta->album : "Unknown Album");
-    track->genre = g_strdup(meta->genre ? meta->genre : "Unknown");
     
-    if (meta->composer) track->composer = g_strdup(meta->composer);
-    if (meta->albumartist) track->albumartist = g_strdup(meta->albumartist);
+    // Essential timing and quality information
+    track->tracklen = meta->duration * 1000; // Convert to milliseconds (CRITICAL for playback)
+    track->bitrate = meta->bitrate > 0 ? meta->bitrate : 128; // Default bitrate if not available
     
-    // Set track numbers and metadata
-    track->track_nr = meta->track_number;
-    track->cd_nr = meta->disc_number;
-    track->year = meta->year;
-    track->bitrate = meta->bitrate;
-    track->tracklen = meta->duration * 1000; // Convert to milliseconds
-    track->size = meta->file_size;
-    track->rating = (guint32)(meta->rating * 20); // Convert to 0-100 scale
-    track->playcount = meta->play_count;
+    // Get file size from the actual file
+    struct stat file_stat;
+    if (stat(ipod_path, &file_stat) == 0) {
+        track->size = file_stat.st_size;
+    }
     
-    // Timestamps
-    track->time_added = meta->time_added;
-    track->time_modified = meta->time_added;
-    track->time_played = meta->time_played;
-    
-    // File information - iPod path should be relative to mount point
-    // Extract the relative path from the full path
+    // Set iPod path - must be relative to mount point
     const char *relative_path = ipod_path;
-    if (g_str_has_prefix(ipod_path, "/media/ipod")) {
-        relative_path = ipod_path + strlen("/media/ipod");
+    // Find the mount point dynamically by looking for /iPod_Control/
+    char *ipod_control_pos = strstr(ipod_path, "/iPod_Control/");
+    if (ipod_control_pos) {
+        relative_path = ipod_control_pos;
     }
     track->ipod_path = g_strdup(relative_path);
+    
+    // Set media type
     track->mediatype = meta->mediatype;
     
-    // Set file type based on extension
-    if (media_type) {
-        if (g_str_has_suffix(media_type, "mp3")) {
+    // Set file type based on actual file extension
+    const char *file_ext = strrchr(ipod_path, '.');
+    if (file_ext) {
+        file_ext++; // Skip the dot
+        if (g_ascii_strcasecmp(file_ext, "mp3") == 0) {
             track->filetype = g_strdup("mp3");
-        } else if (g_str_has_suffix(media_type, "m4a") || g_str_has_suffix(media_type, "aac")) {
+        } else if (g_ascii_strcasecmp(file_ext, "m4a") == 0 || 
+                   g_ascii_strcasecmp(file_ext, "aac") == 0) {
             track->filetype = g_strdup("m4a");
         } else {
-            track->filetype = g_strdup("mp3"); // Default fallback
+            track->filetype = g_strdup("mp3"); // Safe default
         }
+    } else {
+        track->filetype = g_strdup("mp3"); // Safe default
     }
     
-    // Set podcast-specific attributes for proper playback
+    // Set current time for addition
+    track->time_added = time(NULL);
+    track->time_modified = track->time_added;
+    
+    // Set media-type specific attributes
     if (track->mediatype == ITDB_MEDIATYPE_PODCAST) {
-        // Essential podcast flags for iPod firmware
-        track->flag4 = 0x01;  // Podcast display flag
-        track->mark_unplayed = meta->mark_unplayed ? 0x02 : 0x01;  // New episode marker
-        
-        // Podcast URLs and metadata
-        if (meta->podcasturl) track->podcasturl = g_strdup(meta->podcasturl);
-        if (meta->podcastrss) track->podcastrss = g_strdup(meta->podcastrss);
-        if (meta->description) track->description = g_strdup(meta->description);
-        if (meta->subtitle) track->subtitle = g_strdup(meta->subtitle);
-        if (meta->category) track->category = g_strdup(meta->category);
-        
-        // Release date for podcast episodes
-        if (meta->time_released > 0) {
-            track->time_released = meta->time_released;
-        }
-        
-        // Podcast behavior settings
+        track->flag4 = 0x01;  // Podcast flag
+        track->mark_unplayed = 0x02;  // Mark as new
         track->remember_playback_position = TRUE;
         track->skip_when_shuffling = TRUE;
-        
-        // Set bookmark time to 0 for new episodes
         track->bookmark_time = 0;
         
-        log_message(LOG_DEBUG, "Set podcast-specific attributes for track: %s", track->title);
-    } else {
-        // Regular audio track
-        track->flag4 = 0x00;
-        track->mark_unplayed = 0x00;
+        log_message(LOG_DEBUG, "Set podcast attributes for track: %s", track->title);
+    } else if (track->mediatype == ITDB_MEDIATYPE_AUDIO) {
+        // CRITICAL: Ensure music tracks have proper attributes for iPod menu access
+        track->flag4 = 0x00;  // No special flags for music
+        track->mark_unplayed = 0x00;  // Not applicable for music
         track->remember_playback_position = FALSE;
         track->skip_when_shuffling = FALSE;
+        track->bookmark_time = 0;
+        
+        // Essential for music tracks to appear in iPod Music menu
+        track->year = meta->year > 0 ? meta->year : 2024;  // Set a valid year
+        track->track_nr = meta->track_number > 0 ? meta->track_number : 1;  // Track number
+        track->cd_nr = meta->disc_number > 0 ? meta->disc_number : 1;  // Disc number
+        
+        // Genre is important for music categorization
+        if (meta->genre && strlen(meta->genre) > 0) {
+            track->genre = g_strdup(meta->genre);
+        } else {
+            track->genre = g_strdup("Unknown");  // Default genre
+        }
+        
+        log_message(LOG_DEBUG, "Set music attributes for track: %s (year: %d, track: %d)", 
+                   track->title, track->year, track->track_nr);
     }
     
-    log_message(LOG_DEBUG, "Created track: %s by %s", track->title, track->artist);
+    log_message(LOG_DEBUG, "Created simplified track: %s by %s (duration: %d ms, size: %d bytes)", 
+               track->title, track->artist, track->tracklen, track->size);
     return track;
 }
 
@@ -507,7 +586,10 @@ gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path) {
         return FALSE;
     }
     
-    // Generate iPod filename
+    // Initialize the iPod file counter based on existing files
+    initialize_ipod_file_counter(db->mount_point);
+    
+    // Generate iPod filename using Apple/gtkpod naming convention
     char *ipod_path = generate_ipod_filename(db->mount_point, file_path);
     if (!ipod_path) {
         log_message(LOG_ERROR, "Failed to generate iPod path for %s", file_path);
@@ -535,67 +617,33 @@ gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path) {
     // Add track to database
     itdb_track_add(db->itdb, track, -1);
     
-    // Add track to appropriate special playlist based on media type
-    switch (track->mediatype) {
-        case ITDB_MEDIATYPE_PODCAST: {
-            Itdb_Playlist *podcasts_pl = itdb_playlist_podcasts(db->itdb);
-            if (!podcasts_pl) {
-                // Create podcasts playlist if it doesn't exist
-                podcasts_pl = itdb_playlist_new("Podcasts", FALSE);
-                itdb_playlist_set_podcasts(podcasts_pl);
-                itdb_playlist_add(db->itdb, podcasts_pl, -1);
-                log_message(LOG_INFO, "Created Podcasts playlist");
-            }
-            itdb_playlist_add_track(podcasts_pl, track, -1);
-            log_message(LOG_DEBUG, "Added podcast track to Podcasts playlist: %s", track->title);
-            break;
+    // CRITICAL: Add ALL tracks to Master Playlist for iPod menu visibility
+    Itdb_Playlist *master_pl = itdb_playlist_mpl(db->itdb);
+    if (master_pl) {
+        itdb_playlist_add_track(master_pl, track, -1);
+        log_message(LOG_DEBUG, "Added track to Master Playlist: %s", track->title);
+    } else {
+        log_message(LOG_ERROR, "Master Playlist not found - track may not be visible in iPod menu!");
+    }
+    
+    // Add to media-type specific playlists 
+    if (track->mediatype == ITDB_MEDIATYPE_PODCAST) {
+        // Podcast-specific playlist
+        Itdb_Playlist *podcasts_pl = itdb_playlist_podcasts(db->itdb);
+        if (!podcasts_pl) {
+            podcasts_pl = itdb_playlist_new("Podcasts", FALSE);
+            itdb_playlist_set_podcasts(podcasts_pl);
+            itdb_playlist_add(db->itdb, podcasts_pl, -1);
+            log_message(LOG_INFO, "Created essential Podcasts playlist");
         }
-        case ITDB_MEDIATYPE_AUDIOBOOK: {
-            // Look for existing audiobooks playlist or create one
-            Itdb_Playlist *audiobooks_pl = NULL;
-            for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
-                Itdb_Playlist *pl = (Itdb_Playlist*)pl_item->data;
-                if (pl->name && g_ascii_strcasecmp(pl->name, "Audiobooks") == 0) {
-                    audiobooks_pl = pl;
-                    break;
-                }
-            }
-            if (!audiobooks_pl) {
-                audiobooks_pl = itdb_playlist_new("Audiobooks", FALSE);
-                itdb_playlist_add(db->itdb, audiobooks_pl, -1);
-                log_message(LOG_INFO, "Created Audiobooks playlist");
-            }
-            itdb_playlist_add_track(audiobooks_pl, track, -1);
-            log_message(LOG_DEBUG, "Added audiobook track to Audiobooks playlist: %s", track->title);
-            break;
-        }
-        case ITDB_MEDIATYPE_MOVIE:
-        case ITDB_MEDIATYPE_MUSICVIDEO:
-        case ITDB_MEDIATYPE_TVSHOW: {
-            // Look for existing videos playlist or create one
-            Itdb_Playlist *videos_pl = NULL;
-            for (GList *pl_item = db->itdb->playlists; pl_item; pl_item = pl_item->next) {
-                Itdb_Playlist *pl = (Itdb_Playlist*)pl_item->data;
-                if (pl->name && g_ascii_strcasecmp(pl->name, "Videos") == 0) {
-                    videos_pl = pl;
-                    break;
-                }
-            }
-            if (!videos_pl) {
-                videos_pl = itdb_playlist_new("Videos", FALSE);
-                itdb_playlist_add(db->itdb, videos_pl, -1);
-                log_message(LOG_INFO, "Created Videos playlist");
-            }
-            itdb_playlist_add_track(videos_pl, track, -1);
-            log_message(LOG_DEBUG, "Added video track to Videos playlist: %s", track->title);
-            break;
-        }
-        case ITDB_MEDIATYPE_AUDIO:
-        default:
-            // Regular music tracks are automatically available in the Music menu
-            // No special playlist needed
-            log_message(LOG_DEBUG, "Added music track to main library: %s", track->title);
-            break;
+        itdb_playlist_add_track(podcasts_pl, track, -1);
+        log_message(LOG_DEBUG, "Added podcast track to Podcasts playlist: %s", track->title);
+    } else if (track->mediatype == ITDB_MEDIATYPE_AUDIO) {
+        // Music tracks are accessible through Master Playlist - no special playlist needed
+        log_message(LOG_DEBUG, "Music track added to Master Playlist: %s", track->title);
+    } else {
+        log_message(LOG_DEBUG, "Added %s track to Master Playlist: %s", 
+                   get_media_type_name(track->mediatype), track->title);
     }
     
     // Update statistics
