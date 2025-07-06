@@ -22,6 +22,9 @@ gboolean add_file_to_ipod(RbIpodDb *db, const char *file_path);
 
 // Audio metadata extraction
 gboolean extract_audio_duration(const char *file_path, int *duration, int *bitrate);
+gboolean extract_audio_duration_mediainfo(const char *file_path, int *duration, int *bitrate);
+gboolean extract_metadata_field(const char *file_path, const char *field_name, char **result);
+gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta);
 gboolean probe_audio_file(const char *file_path, AudioMetadata *meta);
 
 #endif // RBIPOD_FILES_H

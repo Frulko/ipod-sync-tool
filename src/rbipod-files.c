@@ -77,74 +77,235 @@ gboolean is_supported_audio_file(const char *filename) {
             g_ascii_strcasecmp(ext, "mp4") == 0);
 }
 
-gboolean extract_audio_duration(const char *file_path, int *duration, int *bitrate) {
+gboolean extract_audio_duration_mediainfo(const char *file_path, int *duration, int *bitrate) {
     if (!file_path || !duration || !bitrate) return FALSE;
     
     *duration = 0;
     *bitrate = 0;
     
-    FILE *file = fopen(file_path, "rb");
-    if (!file) return FALSE;
+    // Use mediainfo to extract precise metadata
+    char command[2048];
+    snprintf(command, sizeof(command), 
+             "mediainfo --Output='Duration=%%Duration%%;Bitrate=%%BitRate%%' \"%s\" 2>/dev/null", 
+             file_path);
     
-    // Get file size
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    FILE *pipe = popen(command, "r");
+    if (!pipe) {
+        log_message(LOG_WARNING, "Failed to run mediainfo command");
+        return FALSE;
+    }
     
-    // Check file extension for format-specific handling
-    const char *ext = strrchr(file_path, '.');
-    if (ext) {
-        ext++; // Skip the dot
+    char output[512];
+    if (fgets(output, sizeof(output), pipe)) {
+        // Parse mediainfo output format: Duration=XXXX;Bitrate=YYYY
+        char *duration_str = strstr(output, "Duration=");
+        char *bitrate_str = strstr(output, "Bitrate=");
         
-        if (g_ascii_strcasecmp(ext, "mp3") == 0) {
-            // Basic MP3 duration estimation
-            // Read first few bytes to check for MP3 header
-            unsigned char header[4];
-            if (fread(header, 1, 4, file) == 4) {
-                if (header[0] == 0xFF && (header[1] & 0xE0) == 0xE0) {
-                    // Valid MP3 header found
-                    // Estimate duration based on file size and typical bitrate
-                    // This is a rough estimation - real implementation would need full MP3 parsing
-                    long estimated_bitrate = 128; // Default assumption
-                    *bitrate = estimated_bitrate;
-                    *duration = (file_size * 8) / (estimated_bitrate * 1000); // seconds
+        if (duration_str) {
+            duration_str += 9; // Skip "Duration="
+            long duration_ms = strtol(duration_str, NULL, 10);
+            *duration = duration_ms / 1000; // Convert milliseconds to seconds
+        }
+        
+        if (bitrate_str) {
+            bitrate_str += 8; // Skip "Bitrate="
+            *bitrate = strtol(bitrate_str, NULL, 10) / 1000; // Convert bps to kbps
+        }
+        
+        log_message(LOG_DEBUG, "Mediainfo extracted: %s -> duration: %d sec, bitrate: %d kbps", 
+                   file_path, *duration, *bitrate);
+    }
+    
+    pclose(pipe);
+    
+    // If mediainfo failed, try alternative approach with ffprobe
+    if (*duration == 0) {
+        snprintf(command, sizeof(command), 
+                 "ffprobe -v quiet -show_entries format=duration,bit_rate -of csv=p=0 \"%s\" 2>/dev/null", 
+                 file_path);
+        
+        pipe = popen(command, "r");
+        if (pipe) {
+            if (fgets(output, sizeof(output), pipe)) {
+                // Parse ffprobe CSV output: duration,bit_rate
+                char *token = strtok(output, ",");
+                if (token) {
+                    double duration_float = strtod(token, NULL);
+                    *duration = (int)duration_float;
                     
-                    log_message(LOG_DEBUG, "MP3 duration estimated: %d seconds, bitrate: %d kbps", *duration, *bitrate);
+                    token = strtok(NULL, ",");
+                    if (token) {
+                        *bitrate = strtol(token, NULL, 10) / 1000; // Convert bps to kbps
+                    }
                 }
+                
+                log_message(LOG_DEBUG, "FFprobe extracted: %s -> duration: %d sec, bitrate: %d kbps", 
+                           file_path, *duration, *bitrate);
             }
-        } else {
-            // For other formats, provide a basic estimation
-            // This is a fallback - real implementation would need format-specific parsers
-            *bitrate = 128; // Default
-            *duration = file_size / 16000; // Rough estimation (128 kbps)
-            
-            log_message(LOG_DEBUG, "Audio duration estimated: %d seconds for %s", *duration, ext);
+            pclose(pipe);
         }
     }
     
-    fclose(file);
-    
-    // Ensure we have some reasonable values
-    if (*duration == 0 && file_size > 1024) {
-        // Fallback: assume 3-minute average for unknown files
-        *duration = 180;
-        *bitrate = 128;
-        log_message(LOG_DEBUG, "Using fallback duration: 180 seconds");
+    // Set reasonable defaults if extraction failed
+    if (*duration == 0) {
+        // Try to estimate from file size as last resort
+        FILE *file = fopen(file_path, "rb");
+        if (file) {
+            fseek(file, 0, SEEK_END);
+            long file_size = ftell(file);
+            fclose(file);
+            
+            if (file_size > 1024) {
+                *bitrate = 128; // Default bitrate
+                *duration = (file_size * 8) / (*bitrate * 1000); // Rough estimation
+                log_message(LOG_DEBUG, "Using file size estimation: %d seconds", *duration);
+            }
+        }
     }
     
     return (*duration > 0);
 }
 
+gboolean extract_audio_duration(const char *file_path, int *duration, int *bitrate) {
+    // Use the new robust extraction method
+    return extract_audio_duration_mediainfo(file_path, duration, bitrate);
+}
+
+gboolean extract_metadata_field(const char *file_path, const char *field_name, char **result) {
+    if (!file_path || !field_name || !result) return FALSE;
+    
+    char command[1024];
+    snprintf(command, sizeof(command), "mediainfo --Inform=\"General;%%%s%%\" \"%s\" 2>/dev/null", field_name, file_path);
+    
+    FILE *pipe = popen(command, "r");
+    if (!pipe) return FALSE;
+    
+    char output[512];
+    gboolean success = FALSE;
+    
+    if (fgets(output, sizeof(output), pipe)) {
+        // Remove trailing newline
+        char *newline = strchr(output, '\n');
+        if (newline) *newline = '\0';
+        
+        // Only set if we got a non-empty result
+        if (strlen(output) > 0) {
+            *result = g_strdup(output);
+            success = TRUE;
+        }
+    }
+    
+    pclose(pipe);
+    return success;
+}
+
+gboolean extract_audio_metadata_full(const char *file_path, AudioMetadata *meta) {
+    if (!file_path || !meta) return FALSE;
+    
+    gboolean any_success = FALSE;
+    
+    // Extract individual fields using mediainfo
+    char *temp_str = NULL;
+    
+    // Extract title (Track name)
+    if (extract_metadata_field(file_path, "Track name", &temp_str)) {
+        g_free(meta->title);
+        meta->title = temp_str;
+        temp_str = NULL;
+        any_success = TRUE;
+    }
+    
+    // Extract artist (Performer)  
+    if (extract_metadata_field(file_path, "Performer", &temp_str)) {
+        g_free(meta->artist);
+        meta->artist = temp_str;
+        temp_str = NULL;
+        any_success = TRUE;
+    }
+    
+    // Extract album
+    if (extract_metadata_field(file_path, "Album", &temp_str)) {
+        g_free(meta->album);
+        meta->album = temp_str;
+        temp_str = NULL;
+        any_success = TRUE;
+    }
+    
+    // Extract genre
+    if (extract_metadata_field(file_path, "Genre", &temp_str)) {
+        g_free(meta->genre);
+        meta->genre = temp_str;
+        temp_str = NULL;
+        any_success = TRUE;
+    }
+    
+    // Extract description (USLT - unsynchronized lyrics/description)
+    if (extract_metadata_field(file_path, "USLT", &temp_str)) {
+        g_free(meta->description);
+        meta->description = temp_str;
+        temp_str = NULL;
+        any_success = TRUE;
+    }
+    
+    // Extract duration and bitrate using separate command
+    char command[1024];
+    snprintf(command, sizeof(command), "mediainfo --Inform=\"General;%%Duration%%,%%OverallBitRate%%\" \"%s\" 2>/dev/null", file_path);
+    
+    FILE *pipe = popen(command, "r");
+    if (pipe) {
+        char output[256];
+        if (fgets(output, sizeof(output), pipe)) {
+            // Parse duration,bitrate format
+            char *token = strtok(output, ",");
+            if (token) {
+                long duration_ms = strtol(token, NULL, 10);
+                meta->duration = duration_ms / 1000;  // Convert ms to seconds
+                
+                token = strtok(NULL, ",");
+                if (token) {
+                    meta->bitrate = strtol(token, NULL, 10) / 1000;  // Convert bps to kbps
+                }
+                any_success = TRUE;
+            }
+        }
+        pclose(pipe);
+    }
+    
+    log_message(LOG_DEBUG, "Extracted metadata: Title='%s', Artist='%s', Album='%s', Duration=%d sec, Bitrate=%d kbps", 
+               meta->title ? meta->title : "N/A", 
+               meta->artist ? meta->artist : "N/A", 
+               meta->album ? meta->album : "N/A", 
+               meta->duration, meta->bitrate);
+    
+    // If duration extraction failed, try the fallback method
+    if (meta->duration == 0) {
+        int duration = 0, bitrate = 0;
+        if (extract_audio_duration(file_path, &duration, &bitrate)) {
+            meta->duration = duration;
+            if (meta->bitrate == 0) meta->bitrate = bitrate;
+            any_success = TRUE;
+        }
+    }
+    
+    return any_success;
+}
+
 gboolean probe_audio_file(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;
     
-    int duration = 0, bitrate = 0;
+    // Use the comprehensive metadata extraction
+    if (extract_audio_metadata_full(file_path, meta)) {
+        log_message(LOG_DEBUG, "Full metadata extraction successful for: %s", file_path);
+        return TRUE;
+    }
     
+    // Fallback to duration-only extraction
+    int duration = 0, bitrate = 0;
     if (extract_audio_duration(file_path, &duration, &bitrate)) {
         meta->duration = duration;
         meta->bitrate = bitrate;
         
-        log_message(LOG_DEBUG, "Probed audio file: %s -> duration: %d sec, bitrate: %d kbps", 
+        log_message(LOG_DEBUG, "Fallback duration extraction: %s -> %d sec, %d kbps", 
                    file_path, duration, bitrate);
         return TRUE;
     }
