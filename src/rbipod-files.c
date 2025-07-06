@@ -4,7 +4,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <unistd.h>
+#include <time.h>
 #include <glib.h>
+#include <gio/gio.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 #include <gpod/itdb.h>
 #include <tag_c.h>
 
@@ -570,6 +573,11 @@ gboolean extract_audio_metadata_taglib(const char *file_path, AudioMetadata *met
         any_success = TRUE;
     }
     
+    // Extract podcast release date from tags using C++ module
+    if (meta->mediatype == ITDB_MEDIATYPE_PODCAST) {
+        extract_extended_podcast_metadata(file_path, meta);
+    }
+    
     // Get audio properties
     const TagLib_AudioProperties *props = taglib_file_audioproperties(file);
     if (props) {
@@ -782,28 +790,63 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
     
     // Add artwork using libgpod memory-based API if available
     if (meta->artwork_data && meta->artwork_size > 0) {
+        guchar *final_artwork_data = meta->artwork_data;
+        gsize final_artwork_size = meta->artwork_size;
+        gboolean need_to_free_converted = FALSE;
+        
+        // Convert to JPEG if format is not already JPEG
+        if (meta->artwork_format && strcmp(meta->artwork_format, "jpeg") != 0 && strcmp(meta->artwork_format, "jpg") != 0) {
+            log_message(LOG_DEBUG, "Converting artwork from %s to JPEG for better iPod compatibility", meta->artwork_format);
+            
+            // Load image from memory using GdkPixbuf
+            GInputStream *stream = g_memory_input_stream_new_from_data(meta->artwork_data, meta->artwork_size, NULL);
+            GError *error = NULL;
+            GdkPixbuf *pixbuf = gdk_pixbuf_new_from_stream(stream, NULL, &error);
+            g_object_unref(stream);
+            
+            if (pixbuf) {
+                // Convert to JPEG
+                gchar *jpeg_data = NULL;
+                gsize jpeg_size = 0;
+                
+                if (gdk_pixbuf_save_to_buffer(pixbuf, &jpeg_data, &jpeg_size, "jpeg", &error, "quality", "90", NULL)) {
+                    final_artwork_data = (guchar*)jpeg_data;
+                    final_artwork_size = jpeg_size;
+                    need_to_free_converted = TRUE;
+                    log_message(LOG_DEBUG, "Successfully converted artwork to JPEG: %zu -> %zu bytes", 
+                               meta->artwork_size, jpeg_size);
+                } else {
+                    log_message(LOG_WARNING, "Failed to convert artwork to JPEG: %s", error ? error->message : "unknown error");
+                    if (error) g_error_free(error);
+                }
+                g_object_unref(pixbuf);
+            } else {
+                log_message(LOG_WARNING, "Failed to load artwork for conversion: %s", error ? error->message : "unknown error");
+                if (error) g_error_free(error);
+            }
+        }
+        
         // Use itdb_track_set_thumbnails_from_data for direct memory-based artwork handling
-        // This is more efficient than creating temporary files
-        gboolean artwork_added = itdb_track_set_thumbnails_from_data(track, meta->artwork_data, meta->artwork_size);
+        gboolean artwork_added = itdb_track_set_thumbnails_from_data(track, final_artwork_data, final_artwork_size);
         
         if (artwork_added) {
-            const char *ext = (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpg";
+            const char *format_desc = need_to_free_converted ? "jpeg (converted)" : 
+                                    (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpeg";
             log_message(LOG_DEBUG, "Successfully added artwork to track: %s (%zu bytes, format: %s)", 
-                       track->title, meta->artwork_size, ext);
+                       track->title, final_artwork_size, format_desc);
         } else {
             log_message(LOG_WARNING, "Failed to add artwork to track: %s (libgpod memory-based error)", track->title);
             
             // Fallback: Use traditional file-based method if memory-based fails
             char temp_artwork[256];
-            const char *ext = (meta->artwork_format && strcmp(meta->artwork_format, "png") == 0) ? "png" : "jpg";
-            snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.%s", getpid(), ext);
+            snprintf(temp_artwork, sizeof(temp_artwork), "/tmp/track_artwork_%d.jpg", getpid());
             
             FILE *temp_file = fopen(temp_artwork, "wb");
             if (temp_file) {
-                size_t written = fwrite(meta->artwork_data, 1, meta->artwork_size, temp_file);
+                size_t written = fwrite(final_artwork_data, 1, final_artwork_size, temp_file);
                 fclose(temp_file);
                 
-                if (written == meta->artwork_size) {
+                if (written == final_artwork_size) {
                     if (itdb_track_set_thumbnails(track, temp_artwork)) {
                         log_message(LOG_DEBUG, "Successfully added artwork using file-based fallback: %s", track->title);
                     } else {
@@ -812,6 +855,11 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
                 }
                 unlink(temp_artwork); // Clean up temporary file
             }
+        }
+        
+        // Clean up converted data if needed
+        if (need_to_free_converted) {
+            g_free(final_artwork_data);
         }
     }
     
@@ -823,15 +871,38 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
         track->skip_when_shuffling = TRUE;
         track->bookmark_time = 0;
         
+        // Set podcast episode/season numbers (use libgpod track/disc fields)
+        if (meta->episode_number > 0) {
+            track->track_nr = meta->episode_number;
+        }
+        if (meta->season_number > 0) {
+            track->cd_nr = meta->season_number;
+        }
+        
         // Set podcast-specific metadata for better iPod display
         if (meta->description && strlen(meta->description) > 0) {
             track->description = g_strdup(meta->description);
+        }
+        if (meta->episode_summary && strlen(meta->episode_summary) > 0) {
+            // Use comment field for episode summary if description is not available
+            if (!track->description) {
+                track->description = g_strdup(meta->episode_summary);
+            }
         }
         if (meta->subtitle && strlen(meta->subtitle) > 0) {
             track->subtitle = g_strdup(meta->subtitle);
         }
         if (meta->category && strlen(meta->category) > 0) {
             track->category = g_strdup(meta->category);
+        }
+        if (meta->podcast_name && strlen(meta->podcast_name) > 0) {
+            // Use album field for podcast show name
+            if (track->album) g_free(track->album);
+            track->album = g_strdup(meta->podcast_name);
+        }
+        if (meta->episode_id && strlen(meta->episode_id) > 0) {
+            // Store episode ID in grouping field for reference
+            track->grouping = g_strdup(meta->episode_id);
         }
         if (meta->podcasturl && strlen(meta->podcasturl) > 0) {
             track->podcasturl = g_strdup(meta->podcasturl);
@@ -846,8 +917,9 @@ Itdb_Track* create_ipod_track_from_metadata(const AudioMetadata *meta, const cha
             track->time_modified = meta->time_released;  // Use release date as modification time
         }
         
-        log_message(LOG_DEBUG, "Set podcast attributes for track: %s (Episode: %d, Season: %d, Released: %ld)", 
-                   track->title, track->track_nr, track->cd_nr, track->time_released);
+        log_message(LOG_DEBUG, "Set podcast attributes for track: %s (Episode: %d, Season: %d, Released: %ld, Show: %s)", 
+                   track->title, track->track_nr, track->cd_nr, track->time_released, 
+                   meta->podcast_name ? meta->podcast_name : "N/A");
     } else if (track->mediatype == ITDB_MEDIATYPE_AUDIO) {
         // CRITICAL: Ensure music tracks have proper attributes for iPod menu access
         track->flag4 = 0x00;  // No special flags for music

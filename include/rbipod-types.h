@@ -76,6 +76,13 @@ typedef struct {
     time_t time_released;
     gboolean mark_unplayed;
     
+    // Podcast episode metadata
+    int season_number;     // Season number (CD number for libgpod)
+    int episode_number;    // Episode number (track number for libgpod)
+    char *episode_id;      // Unique episode identifier
+    char *podcast_name;    // Podcast show name (for display)
+    char *episode_summary; // Episode summary/description
+    
     // Artwork/Cover fields
     guchar *artwork_data;
     gsize artwork_size;

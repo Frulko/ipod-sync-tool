@@ -40,6 +40,7 @@ gboolean extract_artwork_taglib_native(const char *file_path, AudioMetadata *met
 gboolean extract_artwork_mp3_id3v2(const char *file_path, AudioMetadata *meta);
 gboolean extract_artwork_flac(const char *file_path, AudioMetadata *meta);
 gboolean extract_artwork_mp4(const char *file_path, AudioMetadata *meta);
+gboolean extract_extended_podcast_metadata(const char *file_path, AudioMetadata *meta);
 #ifdef __cplusplus
 }
 #endif

@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <time.h>
 #include <glib.h>
 
 // TagLib C++ headers
@@ -9,8 +10,10 @@
 #include <taglib/mpegfile.h>
 #include <taglib/id3v2tag.h>
 #include <taglib/attachedpictureframe.h>
+#include <taglib/textidentificationframe.h>
 #include <taglib/flacfile.h>
 #include <taglib/flacpicture.h>
+#include <taglib/xiphcomment.h>
 #include <taglib/mp4file.h>
 #include <taglib/mp4tag.h>
 #include <taglib/mp4coverart.h>
@@ -169,6 +172,165 @@ extern "C" gboolean extract_artwork_mp4(const char *file_path, AudioMetadata *me
 }
 
 // Main TagLib artwork extraction function
+extern "C" gboolean extract_extended_podcast_metadata(const char *file_path, AudioMetadata *meta) {
+    if (!file_path || !meta) return FALSE;
+    
+    try {
+        TagLib::FileRef fileRef(file_path);
+        if (fileRef.isNull() || !fileRef.tag()) {
+            return FALSE;
+        }
+        
+        gboolean found_any = FALSE;
+        
+        // For MP3 files, check ID3v2 tags for extended metadata
+        TagLib::MPEG::File *mpegFile = dynamic_cast<TagLib::MPEG::File*>(fileRef.file());
+        if (mpegFile && mpegFile->ID3v2Tag()) {
+            TagLib::ID3v2::Tag *id3v2 = mpegFile->ID3v2Tag();
+            
+            // Extract DATE field (TDRC, TDAT, DATE)
+            TagLib::ID3v2::FrameList date_frames = id3v2->frameList("TDRC");
+            if (date_frames.isEmpty()) date_frames = id3v2->frameList("TDAT");
+            if (date_frames.isEmpty()) date_frames = id3v2->frameList("DATE");
+            if (!date_frames.isEmpty()) {
+                TagLib::String date_str = date_frames.front()->toString();
+                if (!date_str.isEmpty()) {
+                    std::string date_std = date_str.to8Bit(true);
+                    struct tm tm_date;
+                    memset(&tm_date, 0, sizeof(tm_date));
+                    
+                    if (strptime(date_std.c_str(), "%Y-%m-%d", &tm_date) ||
+                        strptime(date_std.c_str(), "%Y/%m/%d", &tm_date) ||
+                        strptime(date_std.c_str(), "%Y-%m", &tm_date) ||
+                        strptime(date_std.c_str(), "%Y", &tm_date)) {
+                        meta->time_released = mktime(&tm_date);
+                        found_any = TRUE;
+                        g_print("[DEBUG] Extracted DATE: '%s' -> %ld\n", date_std.c_str(), meta->time_released);
+                    }
+                }
+            }
+            
+            // Extract GROUPING (TIT1)
+            TagLib::ID3v2::FrameList grouping_frames = id3v2->frameList("TIT1");
+            if (!grouping_frames.isEmpty()) {
+                TagLib::String grouping_str = grouping_frames.front()->toString();
+                if (!grouping_str.isEmpty()) {
+                    if (meta->episode_id) g_free(meta->episode_id);
+                    meta->episode_id = g_strdup(grouping_str.to8Bit(true).c_str());
+                    found_any = TRUE;
+                    g_print("[DEBUG] Extracted GROUPING: '%s'\n", meta->episode_id);
+                }
+            }
+            
+            // Extract SUBTITLE (TIT3)
+            TagLib::ID3v2::FrameList subtitle_frames = id3v2->frameList("TIT3");
+            if (!subtitle_frames.isEmpty()) {
+                TagLib::String subtitle_str = subtitle_frames.front()->toString();
+                if (!subtitle_str.isEmpty()) {
+                    if (meta->subtitle) g_free(meta->subtitle);
+                    meta->subtitle = g_strdup(subtitle_str.to8Bit(true).c_str());
+                    found_any = TRUE;
+                    g_print("[DEBUG] Extracted SUBTITLE: '%s'\n", meta->subtitle);
+                }
+            }
+            
+            // Extract CATEGORY (TCAT - custom frame)
+            TagLib::ID3v2::FrameList category_frames = id3v2->frameList("TCAT");
+            if (category_frames.isEmpty()) {
+                // Try TXXX frame with description "CATEGORY"
+                TagLib::ID3v2::FrameList txxx_frames = id3v2->frameList("TXXX");
+                for (auto it = txxx_frames.begin(); it != txxx_frames.end(); ++it) {
+                    TagLib::ID3v2::UserTextIdentificationFrame *txxx = 
+                        dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
+                    if (txxx && txxx->description().upper() == "CATEGORY") {
+                        if (!txxx->fieldList().isEmpty()) {
+                            if (meta->category) g_free(meta->category);
+                            meta->category = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                            found_any = TRUE;
+                            g_print("[DEBUG] Extracted CATEGORY: '%s'\n", meta->category);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Extract PODCAST (show name from TALB if different from TXXX PODCAST)
+            TagLib::ID3v2::FrameList podcast_frames = id3v2->frameList("TXXX");
+            for (auto it = podcast_frames.begin(); it != podcast_frames.end(); ++it) {
+                TagLib::ID3v2::UserTextIdentificationFrame *txxx = 
+                    dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
+                if (txxx && (txxx->description().upper() == "PODCAST" || 
+                            txxx->description().upper() == "PODCASTNAME")) {
+                    if (!txxx->fieldList().isEmpty()) {
+                        if (meta->podcast_name) g_free(meta->podcast_name);
+                        meta->podcast_name = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                        found_any = TRUE;
+                        g_print("[DEBUG] Extracted PODCAST: '%s'\n", meta->podcast_name);
+                        break;
+                    }
+                }
+            }
+            
+            // Extract PODCASTURL
+            TagLib::ID3v2::FrameList url_frames = id3v2->frameList("WOAS");
+            if (url_frames.isEmpty()) {
+                // Try TXXX frame with PODCASTURL
+                for (auto it = podcast_frames.begin(); it != podcast_frames.end(); ++it) {
+                    TagLib::ID3v2::UserTextIdentificationFrame *txxx = 
+                        dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
+                    if (txxx && txxx->description().upper() == "PODCASTURL") {
+                        if (!txxx->fieldList().isEmpty()) {
+                            if (meta->podcasturl) g_free(meta->podcasturl);
+                            meta->podcasturl = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                            found_any = TRUE;
+                            g_print("[DEBUG] Extracted PODCASTURL: '%s'\n", meta->podcasturl);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Extract PODCASTRSS
+            for (auto it = podcast_frames.begin(); it != podcast_frames.end(); ++it) {
+                TagLib::ID3v2::UserTextIdentificationFrame *txxx = 
+                    dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
+                if (txxx && txxx->description().upper() == "PODCASTRSS") {
+                    if (!txxx->fieldList().isEmpty()) {
+                        if (meta->podcastrss) g_free(meta->podcastrss);
+                        meta->podcastrss = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                        found_any = TRUE;
+                        g_print("[DEBUG] Extracted PODCASTRSS: '%s'\n", meta->podcastrss);
+                        break;
+                    }
+                }
+            }
+            
+            // Extract DESCRIPTION (longer description)
+            for (auto it = podcast_frames.begin(); it != podcast_frames.end(); ++it) {
+                TagLib::ID3v2::UserTextIdentificationFrame *txxx = 
+                    dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(*it);
+                if (txxx && (txxx->description().upper() == "DESCRIPTION" ||
+                            txxx->description().upper() == "EPISODESUMMARY")) {
+                    if (!txxx->fieldList().isEmpty()) {
+                        if (meta->episode_summary) g_free(meta->episode_summary);
+                        meta->episode_summary = g_strdup(txxx->fieldList().back().to8Bit(true).c_str());
+                        found_any = TRUE;
+                        g_print("[DEBUG] Extracted DESCRIPTION: '%s'\n", meta->episode_summary);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        return found_any;
+        
+    } catch (const std::exception& e) {
+        g_print("[WARNING] Exception in date extraction: %s\n", e.what());
+    }
+    
+    return FALSE;
+}
+
 extern "C" gboolean extract_artwork_taglib_native(const char *file_path, AudioMetadata *meta) {
     if (!file_path || !meta) return FALSE;
     

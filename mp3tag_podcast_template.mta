@@ -1,0 +1,63 @@
+[Mp3tag Action]
+Name=Podcast Complete Setup
+Guid={B8F7E4A2-1234-5678-9ABC-DEF123456789}
+
+[1]
+Type=5
+Name=Set Genre to Podcast
+Field=GENRE
+Formatstring=Podcast
+
+[2]
+Type=5
+Name=Auto Episode ID from filename
+Field=GROUPING
+Formatstring=$if2(%grouping%,%artist:upper%-S%discnumber%E%track%)
+
+[3]
+Type=5
+Name=Set Category
+Field=CATEGORY
+Formatstring=$if2(%category%,Technology)
+
+[4]
+Type=5
+Name=Auto Release Date
+Field=DATE
+Formatstring=$if2(%date%,$year(%_createdate%)-$num(%_createmonth%,2)-$num(%_createday%,2))
+
+[5]
+Type=5
+Name=Podcast Name from Album
+Field=PODCAST
+Formatstring=%album%
+
+[6]
+Type=5
+Name=Network from AlbumArtist
+Field=PODCASTNETWORK
+Formatstring=%albumartist%
+
+[7]
+Type=5
+Name=Auto Podcast URL
+Field=PODCASTURL
+Formatstring=$if2(%podcasturl%,https://podcast.example.com/s%discnumber%e%track%)
+
+[8]
+Type=5
+Name=Auto RSS Feed
+Field=PODCASTRSS
+Formatstring=$if2(%podcastrss%,https://podcast.example.com/feed.rss)
+
+[9]
+Type=5
+Name=Set Media Type
+Field=MEDIATYPE
+Formatstring=Podcast
+
+[10]
+Type=5
+Name=Episode Summary from Comment
+Field=DESCRIPTION
+Formatstring=$if(%comment%,%comment%,Épisode %track% de la saison %discnumber% - %title%)

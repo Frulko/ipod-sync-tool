@@ -206,8 +206,83 @@ void free_metadata(AudioMetadata *meta) {
     g_free(meta->description);
     g_free(meta->subtitle);
     g_free(meta->category);
+    g_free(meta->episode_id);
+    g_free(meta->podcast_name);
+    g_free(meta->episode_summary);
     // Free artwork data
     g_free(meta->artwork_data);
     g_free(meta->artwork_format);
     g_free(meta);
+}
+
+// =============================================================================
+// PODCAST-SPECIFIC METADATA UTILITIES
+// =============================================================================
+
+void set_podcast_metadata(AudioMetadata *meta, const char *podcast_name, int season, int episode, 
+                         const char *episode_id, time_t release_date) {
+    if (!meta) return;
+    
+    // Set podcast show name
+    if (podcast_name && strlen(podcast_name) > 0) {
+        g_free(meta->podcast_name);
+        meta->podcast_name = g_strdup(podcast_name);
+    }
+    
+    // Set season and episode numbers
+    meta->season_number = season;
+    meta->episode_number = episode;
+    
+    // Set episode ID
+    if (episode_id && strlen(episode_id) > 0) {
+        g_free(meta->episode_id);
+        meta->episode_id = g_strdup(episode_id);
+    }
+    
+    // Set release date
+    if (release_date > 0) {
+        meta->time_released = release_date;
+    }
+    
+    log_message(LOG_DEBUG, "Set podcast metadata: Show='%s', S%02dE%02d, ID='%s', Released=%ld", 
+               podcast_name ? podcast_name : "N/A", season, episode, 
+               episode_id ? episode_id : "N/A", release_date);
+}
+
+void set_podcast_description(AudioMetadata *meta, const char *description, const char *summary) {
+    if (!meta) return;
+    
+    // Set description (main description field)
+    if (description && strlen(description) > 0) {
+        g_free(meta->description);
+        meta->description = g_strdup(description);
+    }
+    
+    // Set episode summary (extended description)
+    if (summary && strlen(summary) > 0) {
+        g_free(meta->episode_summary);
+        meta->episode_summary = g_strdup(summary);
+    }
+    
+    log_message(LOG_DEBUG, "Set podcast descriptions: Description=%s, Summary=%s", 
+               description ? "SET" : "NULL", summary ? "SET" : "NULL");
+}
+
+void set_podcast_urls(AudioMetadata *meta, const char *podcast_url, const char *rss_url) {
+    if (!meta) return;
+    
+    // Set podcast URL
+    if (podcast_url && strlen(podcast_url) > 0) {
+        g_free(meta->podcasturl);
+        meta->podcasturl = g_strdup(podcast_url);
+    }
+    
+    // Set RSS URL
+    if (rss_url && strlen(rss_url) > 0) {
+        g_free(meta->podcastrss);
+        meta->podcastrss = g_strdup(rss_url);
+    }
+    
+    log_message(LOG_DEBUG, "Set podcast URLs: Podcast=%s, RSS=%s", 
+               podcast_url ? "SET" : "NULL", rss_url ? "SET" : "NULL");
 }
